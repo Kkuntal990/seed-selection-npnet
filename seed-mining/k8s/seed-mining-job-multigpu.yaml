@@ -1,0 +1,66 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seed-mining-sd21-multigpu
+  labels:
+    app: seed-mining
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: seed-mining
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: generator
+          image: seed-mining:latest  # Replace with your registry path
+          resources:
+            requests:
+              cpu: "8"
+              memory: "64Gi"
+              nvidia.com/gpu: "4"
+            limits:
+              cpu: "16"
+              memory: "96Gi"
+              nvidia.com/gpu: "4"
+          command:
+            - "uv"
+            - "run"
+            - "accelerate"
+            - "launch"
+            - "--num_processes"
+            - "4"
+            - "scripts/generate_seed_mining_images.py"
+          args:
+            - "--model_id"
+            - "stabilityai/stable-diffusion-2-1"
+            - "--out_dir"
+            - "/output"
+            - "--seed_range"
+            - "100"
+            - "--batch_size"
+            - "16"
+            - "--generator_device"
+            - "cpu"
+          volumeMounts:
+            - name: output
+              mountPath: /output
+            - name: hf-cache
+              mountPath: /root/.cache/huggingface
+          env:
+            - name: HF_HOME
+              value: /root/.cache/huggingface
+            - name: TRANSFORMERS_CACHE
+              value: /root/.cache/huggingface/hub
+      volumes:
+        - name: output
+          persistentVolumeClaim:
+            claimName: seed-mining-output
+        - name: hf-cache
+          persistentVolumeClaim:
+            claimName: hf-cache
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule

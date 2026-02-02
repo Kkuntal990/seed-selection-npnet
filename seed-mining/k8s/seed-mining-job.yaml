@@ -1,0 +1,66 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seed-mining-sd21
+  labels:
+    app: seed-mining
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: seed-mining
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: generator
+          image: seed-mining:latest  # Replace with your registry path
+          resources:
+            requests:
+              cpu: "4"
+              memory: "32Gi"
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "8"
+              memory: "48Gi"
+              nvidia.com/gpu: "1"
+          args:
+            - "--model_id"
+            - "stabilityai/stable-diffusion-2-1"
+            - "--out_dir"
+            - "/output"
+            - "--seed_range"
+            - "100"
+            - "--height"
+            - "512"
+            - "--width"
+            - "512"
+            - "--num_inference_steps"
+            - "30"
+            - "--guidance_scale"
+            - "7.5"
+            - "--batch_size"
+            - "16"
+            - "--generator_device"
+            - "cpu"
+          volumeMounts:
+            - name: output
+              mountPath: /output
+            - name: hf-cache
+              mountPath: /root/.cache/huggingface
+          env:
+            - name: HF_HOME
+              value: /root/.cache/huggingface
+            - name: TRANSFORMERS_CACHE
+              value: /root/.cache/huggingface/hub
+      volumes:
+        - name: output
+          persistentVolumeClaim:
+            claimName: seed-mining-output  # Create PVC separately
+        - name: hf-cache
+          persistentVolumeClaim:
+            claimName: hf-cache  # Shared HF model cache
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
