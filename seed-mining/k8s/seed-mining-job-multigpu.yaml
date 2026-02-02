@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: seed-mining-sd21-multigpu
+  name: seed-mining-sd35-multigpu
 spec:
   backoffLimit: 3
   template:
@@ -9,14 +9,14 @@ spec:
       labels:
         app: seed-mining
         task: image-generation
-        model: sd21
+        model: sd35-medium
         gpu: a100
     spec:
       restartPolicy: Never
 
       containers:
       - name: generator
-        image: seed-mining:latest  # Replace with your registry path
+        image: ghcr.io/kkuntal990/seed-mining:latest
         imagePullPolicy: Always
         command: ["/bin/bash"]
         args:
@@ -25,13 +25,17 @@ spec:
           echo "========================================="
           echo "Seed Mining — Image Generation (${NPROC} GPUs)"
           echo "Model: ${MODEL_ID}"
-          echo "Seeds: 0..${SEED_RANGE}-1"
+          echo "Seeds: ${SEED_START}..$(( SEED_START + SEED_RANGE - 1 ))"
           echo "========================================="
           echo ""
 
           # GPU verification
           echo "GPU Status:"
           nvidia-smi
+          echo ""
+
+          # Install missing deps for SD3
+          uv pip install sentencepiece protobuf
           echo ""
 
           # Start generation with accelerate
@@ -42,7 +46,12 @@ spec:
             scripts/generate_seed_mining_images.py \
             --model_id "${MODEL_ID}" \
             --out_dir "${OUTPUT_DIR}" \
+            --seed_start "${SEED_START}" \
             --seed_range "${SEED_RANGE}" \
+            --height "${HEIGHT}" \
+            --width "${WIDTH}" \
+            --num_inference_steps "${NUM_INFERENCE_STEPS}" \
+            --guidance_scale "${GUIDANCE_SCALE}" \
             --batch_size "${BATCH_SIZE}" \
             --generator_device "${GENERATOR_DEVICE}" \
             --scheduler "${SCHEDULER}" \
@@ -85,11 +94,21 @@ spec:
 
         # Model configuration
         - name: MODEL_ID
-          value: "stabilityai/stable-diffusion-2-1"
+          value: "stabilityai/stable-diffusion-3.5-medium"
         - name: OUTPUT_DIR
           value: "/output"
+        - name: SEED_START
+          value: "0"
         - name: SEED_RANGE
           value: "100"
+        - name: HEIGHT
+          value: "1024"
+        - name: WIDTH
+          value: "1024"
+        - name: NUM_INFERENCE_STEPS
+          value: "30"
+        - name: GUIDANCE_SCALE
+          value: "7.5"
         - name: BATCH_SIZE
           value: "16"
         - name: GENERATOR_DEVICE

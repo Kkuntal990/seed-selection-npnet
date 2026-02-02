@@ -24,7 +24,8 @@ class SeedMiningConfig(BaseSettings):
     model_id: str = "stabilityai/stable-diffusion-3.5-medium"
 
     # --- Generation ---
-    seed_range: int = Field(default=100, description="Number of seeds (0 .. seed_range-1)")
+    seed_start: int = Field(default=0, description="First seed index (inclusive)")
+    seed_range: int = Field(default=100, description="Number of seeds starting from seed_start")
     seeds_file: Path | None = Field(default=None, description="File with one seed per line")
     height: int = 1024
     width: int = 1024
@@ -95,7 +96,7 @@ class SeedMiningConfig(BaseSettings):
         """Return the list of seeds to generate."""
         if self.seeds_file is not None:
             return [int(line.strip()) for line in self.seeds_file.read_text().splitlines() if line.strip()]
-        return list(range(self.seed_range))
+        return list(range(self.seed_start, self.seed_start + self.seed_range))
 
     @property
     def torch_dtype_str(self) -> str:

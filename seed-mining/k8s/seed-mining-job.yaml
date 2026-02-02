@@ -10,11 +10,51 @@ spec:
     metadata:
       labels:
         app: seed-mining
+        task: image-generation
+        model: sd35-medium
     spec:
       restartPolicy: OnFailure
       containers:
         - name: generator
-          image: seed-mining:latest  # Replace with your registry path
+          image: ghcr.io/kkuntal990/seed-mining:latest
+          imagePullPolicy: Always
+          command: ["/bin/bash"]
+          args:
+          - "-c"
+          - |
+            echo "========================================="
+            echo "Seed Mining — Image Generation (1 GPU)"
+            echo "Model: ${MODEL_ID}"
+            echo "Seeds: ${SEED_START}..$(( SEED_START + SEED_RANGE - 1 ))"
+            echo "========================================="
+            echo ""
+
+            # GPU verification
+            echo "GPU Status:"
+            nvidia-smi
+            echo ""
+
+            # Install missing deps for SD3
+            uv pip install sentencepiece protobuf
+            echo ""
+
+            # Start generation
+            echo "Starting image generation..."
+            echo ""
+            uv run python scripts/generate_seed_mining_images.py \
+              --model_id "${MODEL_ID}" \
+              --out_dir "${OUTPUT_DIR}" \
+              --seed_start "${SEED_START}" \
+              --seed_range "${SEED_RANGE}" \
+              --height "${HEIGHT}" \
+              --width "${WIDTH}" \
+              --num_inference_steps "${NUM_INFERENCE_STEPS}" \
+              --guidance_scale "${GUIDANCE_SCALE}" \
+              --batch_size "${BATCH_SIZE}" \
+              --generator_device "${GENERATOR_DEVICE}" \
+              --scheduler "${SCHEDULER}" \
+              --image_format "${IMAGE_FORMAT}"
+
           resources:
             requests:
               cpu: "4"
@@ -24,40 +64,85 @@ spec:
               cpu: "6"
               memory: "40Gi"
               nvidia.com/rtxa6000: "1"
-          args:
-            - "--model_id"
-            - "stabilityai/stable-diffusion-3.5-medium"
-            - "--out_dir"
-            - "/output"
-            - "--seed_range"
-            - "100"
-            - "--height"
-            - "1024"
-            - "--width"
-            - "1024"
-            - "--num_inference_steps"
-            - "30"
-            - "--guidance_scale"
-            - "7.5"
-            - "--batch_size"
-            - "4"
-            - "--generator_device"
-            - "cpu"
-            - "--enable_cpu_offload"
+
           volumeMounts:
-            - name: output
-              mountPath: /output
-            - name: hf-cache
-              mountPath: /root/.cache/huggingface
+          - name: cache-volume
+            mountPath: /cache
+          - name: output
+            mountPath: /output
+          - name: dev-shm
+            mountPath: /dev/shm
+
           env:
-            - name: HF_HOME
-              value: /root/.cache/huggingface
-            - name: TRANSFORMERS_CACHE
-              value: /root/.cache/huggingface/hub
+          # HuggingFace token (required for gated models)
+          - name: HF_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: hf-token
+                key: token
+                optional: true
+
+          # Cache directories
+          - name: HF_HOME
+            value: "/cache/hf"
+          - name: TRANSFORMERS_CACHE
+            value: "/cache/hf/transformers"
+
+          # Model configuration
+          - name: MODEL_ID
+            value: "stabilityai/stable-diffusion-3.5-medium"
+          - name: OUTPUT_DIR
+            value: "/output/image_gen_0_to_50"
+          - name: SEED_START
+            value: "0"
+          - name: SEED_RANGE
+            value: "50"
+          - name: HEIGHT
+            value: "1024"
+          - name: WIDTH
+            value: "1024"
+          - name: NUM_INFERENCE_STEPS
+            value: "30"
+          - name: GUIDANCE_SCALE
+            value: "7.5"
+          - name: BATCH_SIZE
+            value: "4"
+          - name: GENERATOR_DEVICE
+            value: "cpu"
+          - name: SCHEDULER
+            value: "ddim"
+          - name: IMAGE_FORMAT
+            value: "jpg"
+
+          # Python and CUDA settings
+          - name: PYTHONUNBUFFERED
+            value: "1"
+          - name: PYTORCH_CUDA_ALLOC_CONF
+            value: "expandable_segments:True"
+
+      tolerations:
+      - effect: NoSchedule
+        key: nautilus.io/hardware
+        operator: Equal
+        value: large-gpu
+      - effect: PreferNoSchedule
+        key: nvidia.com/gpu
+        operator: Exists
+      - key: nautilus.io/reservation
+        operator: Exists
+        effect: NoSchedule
+      - key: nautilus.io/issue
+        operator: Exists
+        effect: NoSchedule
+
       volumes:
-        - name: output
-          persistentVolumeClaim:
-            claimName: seed-mining-output  # Create PVC separately
-        - name: hf-cache
-          persistentVolumeClaim:
-            claimName: hf-cache  # Shared HF model cache
+      - name: output
+        persistentVolumeClaim:
+          claimName: seed-mining-output
+      - name: cache-volume
+        emptyDir:
+          sizeLimit: 100Gi
+      - name: dev-shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 8Gi
