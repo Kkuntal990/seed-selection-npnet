@@ -2,65 +2,147 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: seed-mining-sd21-multigpu
-  labels:
-    app: seed-mining
 spec:
   backoffLimit: 3
   template:
     metadata:
       labels:
         app: seed-mining
+        task: image-generation
+        model: sd21
+        gpu: a100
     spec:
-      restartPolicy: OnFailure
+      restartPolicy: Never
+
       containers:
-        - name: generator
-          image: seed-mining:latest  # Replace with your registry path
-          resources:
-            requests:
-              cpu: "8"
-              memory: "64Gi"
-              nvidia.com/gpu: "4"
-            limits:
-              cpu: "16"
-              memory: "96Gi"
-              nvidia.com/gpu: "4"
-          command:
-            - "uv"
-            - "run"
-            - "accelerate"
-            - "launch"
-            - "--num_processes"
-            - "4"
-            - "scripts/generate_seed_mining_images.py"
-          args:
-            - "--model_id"
-            - "stabilityai/stable-diffusion-2-1"
-            - "--out_dir"
-            - "/output"
-            - "--seed_range"
-            - "100"
-            - "--batch_size"
-            - "16"
-            - "--generator_device"
-            - "cpu"
-          volumeMounts:
-            - name: output
-              mountPath: /output
-            - name: hf-cache
-              mountPath: /root/.cache/huggingface
-          env:
-            - name: HF_HOME
-              value: /root/.cache/huggingface
-            - name: TRANSFORMERS_CACHE
-              value: /root/.cache/huggingface/hub
-      volumes:
-        - name: output
-          persistentVolumeClaim:
-            claimName: seed-mining-output
-        - name: hf-cache
-          persistentVolumeClaim:
-            claimName: hf-cache
+      - name: generator
+        image: seed-mining:latest  # Replace with your registry path
+        imagePullPolicy: Always
+        command: ["/bin/bash"]
+        args:
+        - "-c"
+        - |
+          echo "========================================="
+          echo "Seed Mining — Image Generation (${NPROC} GPUs)"
+          echo "Model: ${MODEL_ID}"
+          echo "Seeds: 0..${SEED_RANGE}-1"
+          echo "========================================="
+          echo ""
+
+          # GPU verification
+          echo "GPU Status:"
+          nvidia-smi
+          echo ""
+
+          # Start generation with accelerate
+          echo "Starting multi-GPU image generation..."
+          echo ""
+          uv run accelerate launch \
+            --num_processes "${NPROC}" \
+            scripts/generate_seed_mining_images.py \
+            --model_id "${MODEL_ID}" \
+            --out_dir "${OUTPUT_DIR}" \
+            --seed_range "${SEED_RANGE}" \
+            --batch_size "${BATCH_SIZE}" \
+            --generator_device "${GENERATOR_DEVICE}" \
+            --scheduler "${SCHEDULER}" \
+            --image_format "${IMAGE_FORMAT}"
+
+        resources:
+          requests:
+            nvidia.com/gpu: "4"
+            memory: "64Gi"
+            cpu: "8"
+          limits:
+            nvidia.com/gpu: "4"
+            memory: "96Gi"
+            cpu: "16"
+
+        volumeMounts:
+        - name: cache-volume
+          mountPath: /cache
+        - name: outputs-volume
+          mountPath: /output
+        - name: dev-shm
+          mountPath: /dev/shm
+
+        env:
+        # HuggingFace token (required for gated models)
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token
+              key: token
+              optional: true
+
+        # Cache directories (using ephemeral emptyDir)
+        - name: HF_HOME
+          value: "/cache/hf"
+        - name: TRANSFORMERS_CACHE
+          value: "/cache/hf/transformers"
+        - name: TORCH_HOME
+          value: "/cache/torch"
+
+        # Model configuration
+        - name: MODEL_ID
+          value: "stabilityai/stable-diffusion-2-1"
+        - name: OUTPUT_DIR
+          value: "/output"
+        - name: SEED_RANGE
+          value: "100"
+        - name: BATCH_SIZE
+          value: "16"
+        - name: GENERATOR_DEVICE
+          value: "cpu"
+        - name: SCHEDULER
+          value: "ddim"
+        - name: IMAGE_FORMAT
+          value: "jpg"
+
+        # DDP configuration
+        - name: NPROC
+          value: "4"
+
+        # Python and CUDA settings
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "expandable_segments:True"
+        - name: NCCL_DEBUG
+          value: "WARN"
+        - name: NCCL_TIMEOUT
+          value: "1800"
+
       tolerations:
-        - key: nvidia.com/gpu
-          operator: Exists
-          effect: NoSchedule
+      - effect: NoSchedule
+        key: nautilus.io/hardware
+        operator: Equal
+        value: large-gpu
+      - effect: PreferNoSchedule
+        key: nvidia.com/gpu
+        operator: Exists
+      - key: nautilus.io/reservation
+        operator: Exists
+        effect: NoSchedule
+
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu.product
+                operator: In
+                values:
+                - NVIDIA-A100-SXM4-80GB
+
+      volumes:
+      - name: cache-volume
+        emptyDir:
+          sizeLimit: 100Gi
+      - name: outputs-volume
+        persistentVolumeClaim:
+          claimName: seed-mining-output
+      - name: dev-shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 48Gi
