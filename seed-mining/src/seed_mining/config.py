@@ -21,13 +21,13 @@ class SeedMiningConfig(BaseSettings):
     model_config = {"env_prefix": "SM_", "cli_parse_args": True}
 
     # --- Model ---
-    model_id: str = "stabilityai/stable-diffusion-2-1"
+    model_id: str = "stabilityai/stable-diffusion-3.5-medium"
 
     # --- Generation ---
     seed_range: int = Field(default=100, description="Number of seeds (0 .. seed_range-1)")
     seeds_file: Path | None = Field(default=None, description="File with one seed per line")
-    height: int = 512
-    width: int = 512
+    height: int = 1024
+    width: int = 1024
     num_inference_steps: int = 30
     guidance_scale: float = 7.5
     batch_size: int = 16

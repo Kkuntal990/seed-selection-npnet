@@ -22,7 +22,7 @@ from seed_mining.logging_utils import ThroughputTracker, setup_logging
 from seed_mining.prompts import Prompt, build_all_prompts
 
 if TYPE_CHECKING:
-    from diffusers import StableDiffusionPipeline
+    from diffusers import DiffusionPipeline
 
     from seed_mining.config import SeedMiningConfig
 
@@ -59,16 +59,39 @@ def _get_scheduler(name: str, config: dict) -> object:  # noqa: ANN401
 # ---------------------------------------------------------------------------
 
 
-def load_pipeline(config: SeedMiningConfig, device: str = "cuda") -> StableDiffusionPipeline:
-    """Load and configure a ``StableDiffusionPipeline``."""
+def _is_sd3_pipeline(pipe: DiffusionPipeline) -> bool:
+    """Check if the loaded pipeline is a Stable Diffusion 3 variant."""
+    cls_name = type(pipe).__name__
+    return "StableDiffusion3" in cls_name
+
+
+def _load_sd3_pipeline(model_id: str, dtype: torch.dtype) -> DiffusionPipeline:
+    """Load a Stable Diffusion 3.x pipeline."""
+    from diffusers import StableDiffusion3Pipeline
+
+    return StableDiffusion3Pipeline.from_pretrained(model_id, torch_dtype=dtype)
+
+
+def _load_sd_pipeline(model_id: str, dtype: torch.dtype) -> DiffusionPipeline:
+    """Load a Stable Diffusion 1.x/2.x pipeline."""
     from diffusers import StableDiffusionPipeline
 
     pipe = StableDiffusionPipeline.from_pretrained(
-        config.model_id,
-        torch_dtype=torch.float16,
-        safety_checker=None,
-        requires_safety_checker=False,
+        model_id, torch_dtype=dtype, safety_checker=None, requires_safety_checker=False
     )
+    return pipe
+
+
+def load_pipeline(config: SeedMiningConfig, device: str = "cuda") -> DiffusionPipeline:
+    """Load and configure a diffusion pipeline (SD 1.x/2.x/3.x)."""
+    dtype = torch.float16
+
+    # Detect pipeline type from model config on Hub
+    model_id = config.model_id
+    if "stable-diffusion-3" in model_id.lower() or "sd3" in model_id.lower():
+        pipe = _load_sd3_pipeline(model_id, dtype)
+    else:
+        pipe = _load_sd_pipeline(model_id, dtype)
 
     # Set scheduler
     pipe.scheduler = _get_scheduler(config.scheduler, pipe.scheduler.config)
@@ -79,9 +102,12 @@ def load_pipeline(config: SeedMiningConfig, device: str = "cuda") -> StableDiffu
     else:
         pipe = pipe.to(device)
 
-    # Optional xformers
+    # Optional xformers (not supported on SD3 transformer models)
     if config.enable_xformers:
-        pipe.enable_xformers_memory_efficient_attention()
+        if _is_sd3_pipeline(pipe):
+            logger.warning("xformers not supported for SD3 pipelines, ignoring --enable_xformers")
+        else:
+            pipe.enable_xformers_memory_efficient_attention()
 
     pipe.set_progress_bar_config(disable=True)
     return pipe  # type: ignore[no-any-return]
@@ -93,7 +119,7 @@ def load_pipeline(config: SeedMiningConfig, device: str = "cuda") -> StableDiffu
 
 
 def generate_batch(
-    pipe: StableDiffusionPipeline,
+    pipe: DiffusionPipeline,
     prompts: list[Prompt],
     seed: int,
     config: SeedMiningConfig,
@@ -167,7 +193,7 @@ def _build_metadata_record(
 
 
 def generate_for_seed(
-    pipe: StableDiffusionPipeline | None,
+    pipe: DiffusionPipeline | None,
     seed: int,
     numeracy: list[Prompt],
     spatial: list[Prompt],

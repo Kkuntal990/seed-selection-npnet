@@ -1,0 +1,77 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: seed-mining-debug
+  labels:
+    app: sd-mining
+    task: seed-mining
+spec:
+  restartPolicy: Never
+  containers:
+  - name: jupyter-container
+    image: ghcr.io/kkuntal990/seed-mining:latest
+    command: ["/bin/bash", "-c"]
+    args:
+      - |
+        cd /app &&
+        uv pip install sentencepiece protobuf jupyterlab &&
+        uv run jupyter lab --ip=0.0.0.0 --no-browser --allow-root --NotebookApp.token=selfimprove
+
+    resources:
+      limits:
+        nvidia.com/rtxa6000: "1"
+        memory: "16Gi"
+        cpu: "2"
+      requests:
+        nvidia.com/rtxa6000: "1"
+        memory: "16Gi"
+        cpu: "2"
+
+    volumeMounts:
+      - name: cache-volume
+        mountPath: /cache
+      - name: output
+        mountPath: /output
+      - name: dev-shm
+        mountPath: /dev/shm
+
+    env:
+    # HuggingFace token (required for reward model)
+    - name: HF_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: hf-token
+          key: token
+          optional: true
+
+    # Python and CUDA settings
+    - name: PYTHONUNBUFFERED
+      value: "1"
+    - name: PYTORCH_CUDA_ALLOC_CONF
+      value: "expandable_segments:True"
+  tolerations:
+    - effect: NoSchedule
+      key: nautilus.io/hardware
+      operator: Equal
+      value: large-gpu
+    - effect: PreferNoSchedule
+      key: nvidia.com/gpu
+      operator: Exists
+    - key: nautilus.io/reservation
+      operator: Exists
+      effect: NoSchedule
+    - key: nautilus.io/issue
+      operator: Exists
+      effect: NoSchedule
+
+  volumes:
+    - name: output
+      persistentVolumeClaim:
+        claimName: seed-mining-output  # Create PVC separately
+    - name: cache-volume
+      emptyDir:
+        sizeLimit: 100Gi
+    - name: dev-shm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 8Gi
