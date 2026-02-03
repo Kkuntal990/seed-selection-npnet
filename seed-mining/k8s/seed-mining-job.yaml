@@ -91,11 +91,11 @@ spec:
           - name: MODEL_ID
             value: "stabilityai/stable-diffusion-3.5-medium"
           - name: OUTPUT_DIR
-            value: "/output/image_gen_0_to_50"
+            value: "/output/image_gen_0_to_25"
           - name: SEED_START
             value: "0"
           - name: SEED_RANGE
-            value: "50"
+            value: "25"
           - name: HEIGHT
             value: "1024"
           - name: WIDTH

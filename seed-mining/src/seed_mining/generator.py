@@ -135,9 +135,16 @@ def generate_batch(
     bs = batch_size or config.batch_size
     all_images: list[Image.Image] = []
 
-    for i in range(0, len(prompts), bs):
+    num_batches = (len(prompts) + bs - 1) // bs
+    for batch_idx, i in enumerate(range(0, len(prompts), bs)):
         batch = prompts[i : i + bs]
         texts = [p.text for p in batch]
+
+        logger.info(
+            "  seed=%d batch %d/%d (%d images) — prompts %d..%d",
+            seed, batch_idx + 1, num_batches, len(batch),
+            batch[0].prompt_id, batch[-1].prompt_id,
+        )
 
         generators = [
             torch.Generator(device=config.generator_device).manual_seed(seed) for _ in batch
@@ -154,6 +161,7 @@ def generate_batch(
                     generator=generators,
                 )
             all_images.extend(result.images)
+            logger.info("  seed=%d batch %d/%d done", seed, batch_idx + 1, num_batches)
         except torch.cuda.OutOfMemoryError:
             torch.cuda.empty_cache()
             if bs <= 1:
@@ -238,7 +246,7 @@ def generate_for_seed(
             save_image_atomic(img, dest)
             rel = str(dest.relative_to(config.out_dir))
             metadata_records.append(_build_metadata_record(prompt, seed, rel, config))
-            logger.debug("Saved %s", dest)
+            logger.info("  Saved seed=%d prompt_id=%d → %s", seed, prompt.prompt_id, rel)
 
         md_path = config.out_dir / "metadata" / f"{category}_images.jsonl"
         append_metadata_jsonl(md_path, metadata_records)
