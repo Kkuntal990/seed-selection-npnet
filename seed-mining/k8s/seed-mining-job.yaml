@@ -52,17 +52,16 @@ spec:
               --guidance_scale "${GUIDANCE_SCALE}" \
               --batch_size "${BATCH_SIZE}" \
               --generator_device "${GENERATOR_DEVICE}" \
-              --scheduler "${SCHEDULER}" \
               --image_format "${IMAGE_FORMAT}"
 
           resources:
             requests:
               cpu: "4"
-              memory: "32Gi"
+              memory: "16Gi"
               nvidia.com/rtxa6000: "1"
             limits:
-              cpu: "6"
-              memory: "40Gi"
+              cpu: "4"
+              memory: "20Gi"
               nvidia.com/rtxa6000: "1"
 
           volumeMounts:
@@ -102,15 +101,13 @@ spec:
           - name: WIDTH
             value: "1024"
           - name: NUM_INFERENCE_STEPS
-            value: "30"
+            value: "20"
           - name: GUIDANCE_SCALE
             value: "5.0"
           - name: BATCH_SIZE
             value: "4"
           - name: GENERATOR_DEVICE
-            value: "cpu"
-          - name: SCHEDULER
-            value: "ddim"
+            value: "cuda"
           - name: IMAGE_FORMAT
             value: "jpg"
 
