@@ -93,8 +93,11 @@ def load_pipeline(config: SeedMiningConfig, device: str = "cuda") -> DiffusionPi
     else:
         pipe = _load_sd_pipeline(model_id, dtype)
 
-    # Set scheduler
-    pipe.scheduler = _get_scheduler(config.scheduler, pipe.scheduler.config)
+    # Set scheduler (SD3 uses FlowMatchEulerDiscreteScheduler — don't override)
+    if _is_sd3_pipeline(pipe):
+        logger.info("SD3 pipeline detected — keeping native FlowMatch scheduler")
+    else:
+        pipe.scheduler = _get_scheduler(config.scheduler, pipe.scheduler.config)
 
     # Move to device
     if config.enable_cpu_offload:

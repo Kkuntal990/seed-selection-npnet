@@ -108,7 +108,7 @@ spec:
         - name: NUM_INFERENCE_STEPS
           value: "30"
         - name: GUIDANCE_SCALE
-          value: "7.5"
+          value: "5.0"
         - name: BATCH_SIZE
           value: "16"
         - name: GENERATOR_DEVICE

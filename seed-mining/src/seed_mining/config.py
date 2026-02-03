@@ -30,7 +30,7 @@ class SeedMiningConfig(BaseSettings):
     height: int = 1024
     width: int = 1024
     num_inference_steps: int = 30
-    guidance_scale: float = 7.5
+    guidance_scale: float = 5.0
     batch_size: int = 16
     generator_device: str = Field(
         default="cpu", description="Device for torch.Generator ('cpu' or 'cuda')"
