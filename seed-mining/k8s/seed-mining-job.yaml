@@ -57,11 +57,11 @@ spec:
           resources:
             requests:
               cpu: "4"
-              memory: "16Gi"
+              memory: "32Gi"
               nvidia.com/rtxa6000: "1"
             limits:
               cpu: "4"
-              memory: "20Gi"
+              memory: "36Gi"
               nvidia.com/rtxa6000: "1"
 
           volumeMounts:
