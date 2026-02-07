@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: seed-mining-sd35
+  name: seed-mining-sd35-50
   labels:
     app: seed-mining
 spec:
@@ -91,11 +91,11 @@ spec:
           - name: MODEL_ID
             value: "stabilityai/stable-diffusion-3.5-medium"
           - name: OUTPUT_DIR
-            value: "/output/image_gen_0_to_25"
+            value: "/output/image_gen_40_to_50"
           - name: SEED_START
-            value: "0"
+            value: "40"
           - name: SEED_RANGE
-            value: "25"
+            value: "10"
           - name: HEIGHT
             value: "1024"
           - name: WIDTH

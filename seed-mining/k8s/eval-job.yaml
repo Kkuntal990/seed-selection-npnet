@@ -1,0 +1,144 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seed-mining-eval
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: seed-mining
+        task: vlm-evaluation
+        model: cogvlm2
+    spec:
+      restartPolicy: OnFailure
+
+      containers:
+      - name: evaluator
+        image: ghcr.io/kkuntal990/seed-mining:latest
+        imagePullPolicy: Always
+        command: ["/bin/bash"]
+        args:
+        - "-c"
+        - |
+          echo "========================================="
+          echo "Seed Mining — VLM Evaluation"
+          echo "VLM: ${VLM_MODEL_ID}"
+          echo "Seeds: ${SEED_START}..$(( SEED_START + SEED_RANGE - 1 ))"
+          echo "========================================="
+          echo ""
+
+          # GPU verification
+          echo "GPU Status:"
+          nvidia-smi
+          echo ""
+
+          # Install eval deps
+          uv pip install scipy bitsandbytes
+          echo ""
+
+          # Start evaluation
+          echo "Starting VLM evaluation..."
+          echo ""
+          uv run python scripts/run_evaluation.py \
+            --vlm_model_id "${VLM_MODEL_ID}" \
+            --quantize "${QUANTIZE}" \
+            --images_dir "${IMAGES_DIR}" \
+            --eval_out_dir "${EVAL_OUT_DIR}" \
+            --seed_start "${SEED_START}" \
+            --seed_range "${SEED_RANGE}" \
+            --image_format "${IMAGE_FORMAT}" \
+            --category "${CATEGORY}"
+
+        resources:
+          requests:
+            nvidia.com/gpu: "1"
+            memory: "48Gi"
+            cpu: "4"
+          limits:
+            nvidia.com/gpu: "1"
+            memory: "64Gi"
+            cpu: "8"
+
+        volumeMounts:
+        - name: cache-volume
+          mountPath: /cache
+        - name: output
+          mountPath: /output
+        - name: dev-shm
+          mountPath: /dev/shm
+
+        env:
+        # HuggingFace token
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token
+              key: token
+              optional: true
+
+        # Cache directories
+        - name: HF_HOME
+          value: "/cache/hf"
+        - name: TRANSFORMERS_CACHE
+          value: "/cache/hf/transformers"
+
+        # VLM configuration
+        - name: VLM_MODEL_ID
+          value: "THUDM/cogvlm2-llama3-chat-19B"
+        - name: QUANTIZE
+          value: "4bit"
+
+        # Input/output
+        - name: IMAGES_DIR
+          value: "/output/image_gen"
+        - name: EVAL_OUT_DIR
+          value: "/output/eval_results"
+        - name: SEED_START
+          value: "0"
+        - name: SEED_RANGE
+          value: "100"
+        - name: IMAGE_FORMAT
+          value: "jpg"
+        - name: CATEGORY
+          value: "all"
+
+        # Python settings
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "expandable_segments:True"
+
+      tolerations:
+      - effect: NoSchedule
+        key: nautilus.io/hardware
+        operator: Equal
+        value: large-gpu
+      - effect: PreferNoSchedule
+        key: nvidia.com/gpu
+        operator: Exists
+      - key: nautilus.io/reservation
+        operator: Exists
+        effect: NoSchedule
+
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu.product
+                operator: In
+                values:
+                - NVIDIA-A100-SXM4-80GB
+
+      volumes:
+      - name: cache-volume
+        emptyDir:
+          sizeLimit: 100Gi
+      - name: output
+        persistentVolumeClaim:
+          claimName: seed-mining-output
+      - name: dev-shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 16Gi

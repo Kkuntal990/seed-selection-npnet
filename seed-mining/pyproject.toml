@@ -20,8 +20,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-xformers = [
-    "xformers",
+xformers = ["xformers"]
+eval = [
+    "scipy>=1.11",
+    "bitsandbytes>=0.41",
 ]
 
 [dependency-groups]
@@ -34,6 +36,8 @@ dev = [
 
 [project.scripts]
 seed-mining = "seed_mining.cli:main"
+seed-mining-eval = "seed_mining.cli_eval:eval_run"
+seed-mining-rank = "seed_mining.cli_eval:eval_rank"
 
 [build-system]
 requires = ["hatchling"]
