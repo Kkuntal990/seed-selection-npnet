@@ -1,13 +1,13 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: seed-mining-eval
+  name: vlm-eval
 spec:
   backoffLimit: 3
   template:
     metadata:
       labels:
-        app: seed-mining
+        app: vlm-eval
         task: vlm-evaluation
         model: cogvlm2
     spec:
@@ -15,14 +15,14 @@ spec:
 
       containers:
       - name: evaluator
-        image: ghcr.io/kkuntal990/seed-mining:latest
+        image: ghcr.io/kkuntal990/vlm-eval:latest
         imagePullPolicy: Always
         command: ["/bin/bash"]
         args:
         - "-c"
         - |
           echo "========================================="
-          echo "Seed Mining — VLM Evaluation"
+          echo "VLM Evaluation — Seed Mining"
           echo "VLM: ${VLM_MODEL_ID}"
           echo "Seeds: ${SEED_START}..$(( SEED_START + SEED_RANGE - 1 ))"
           echo "========================================="
@@ -31,10 +31,6 @@ spec:
           # GPU verification
           echo "GPU Status:"
           nvidia-smi
-          echo ""
-
-          # Install eval deps
-          uv pip install scipy bitsandbytes
           echo ""
 
           # Start evaluation

@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 from PIL import Image
-
 from seed_mining.io_utils import append_metadata_jsonl, image_path, load_existing_keys
 from seed_mining.logging_utils import ThroughputTracker, setup_logging
 from seed_mining.prompts import Prompt, build_all_prompts
@@ -17,9 +16,9 @@ from seed_mining.prompts import Prompt, build_all_prompts
 if TYPE_CHECKING:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    from seed_mining.eval_config import EvalConfig
+    from vlm_eval.eval_config import EvalConfig
 
-logger = logging.getLogger("seed_mining.evaluator")
+logger = logging.getLogger("vlm_eval.evaluator")
 
 # ---------------------------------------------------------------------------
 # VLM prompts (matching paper)

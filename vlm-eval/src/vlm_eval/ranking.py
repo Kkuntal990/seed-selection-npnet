@@ -10,12 +10,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from seed_mining.logging_utils import setup_logging
-from seed_mining.response_parser import extract_spatial_answer, get_number_from_response
+
+from vlm_eval.response_parser import extract_spatial_answer, get_number_from_response
 
 if TYPE_CHECKING:
-    from seed_mining.eval_config import RankingConfig
+    from vlm_eval.eval_config import RankingConfig
 
-logger = logging.getLogger("seed_mining.ranking")
+logger = logging.getLogger("vlm_eval.ranking")
 
 
 @dataclass

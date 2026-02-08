@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from seed_mining.response_parser import extract_spatial_answer, get_number_from_response
+from vlm_eval.response_parser import extract_spatial_answer, get_number_from_response
 
 
 class TestGetNumberFromResponse:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from seed_mining.ranking import SeedScore, chi_square_test, compute_seed_accuracy
+from vlm_eval.ranking import SeedScore, chi_square_test, compute_seed_accuracy
 
 
 class TestComputeSeedAccuracy:
