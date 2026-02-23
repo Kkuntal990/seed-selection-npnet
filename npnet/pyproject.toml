@@ -1,0 +1,49 @@
+[project]
+name = "npnet"
+version = "0.1.0"
+description = "NPNet golden noise training for ECE 271B"
+requires-python = ">=3.11"
+dependencies = [
+    "seed-mining",
+    "torch>=2.1",
+    "diffusers>=0.30",
+    "transformers>=4.36,<=4.45",
+    "accelerate>=0.22",
+    "safetensors",
+    "pydantic>=2.5",
+    "pydantic-settings>=2.1",
+    "Pillow>=10.0",
+    "rich>=13.0",
+    "tqdm",
+    "numpy",
+    "einops",
+    "timm",
+    "sentencepiece",
+    "protobuf",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.4",
+    "mypy>=1.8",
+    "pytest>=8.0",
+]
+
+[project.scripts]
+npnet-collect = "npnet.cli:collect"
+npnet-train = "npnet.cli:train"
+npnet-generate = "npnet.cli:generate"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/npnet"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.uv.sources]
+seed-mining = { path = "../seed-mining" }

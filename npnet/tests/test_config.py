@@ -1,0 +1,109 @@
+"""Tests for NPNet configuration classes."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+
+from npnet.config import DataCollectionConfig, InferenceConfig, TrainingConfig
+
+
+class TestDataCollectionConfig:
+    def test_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(sys, "argv", ["prog"])
+        config = DataCollectionConfig()
+        assert config.model_id == "stabilityai/stable-diffusion-xl-base-1.0"
+        assert config.num_inference_steps == 50
+        assert config.num_inversion_steps == 10
+        assert config.guidance_scale == 5.5
+        assert config.inversion_guidance_scale == 1.0
+        assert config.height == 1024
+        assert config.width == 1024
+        assert config.seed_range == 100
+        assert config.dry_run is False
+
+    def test_seeds_property(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(sys, "argv", ["prog", "--seed_start", "5", "--seed_range", "3"])
+        config = DataCollectionConfig()
+        assert config.seeds == [5, 6, 7]
+
+    def test_env_prefix(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(sys, "argv", ["prog"])
+        monkeypatch.setenv("NPDC_DRY_RUN", "true")
+        config = DataCollectionConfig()
+        assert config.dry_run is True
+
+
+class TestTrainingConfig:
+    def test_from_cli(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "prog",
+                "--noise_pairs_dir", "/tmp/pairs",
+                "--prompt_manifest_path", "/tmp/manifest.jsonl",
+            ],
+        )
+        config = TrainingConfig()
+        assert config.noise_pairs_dir == Path("/tmp/pairs")
+        assert config.prompt_manifest_path == Path("/tmp/manifest.jsonl")
+        assert config.epochs == 30
+        assert config.batch_size == 64
+        assert config.lr == 1e-4
+        assert config.val_split == 0.1
+
+    def test_architecture_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "prog",
+                "--noise_pairs_dir", "/tmp/pairs",
+                "--prompt_manifest_path", "/tmp/manifest.jsonl",
+            ],
+        )
+        config = TrainingConfig()
+        assert config.latent_channels == 4
+        assert config.latent_resolution == 128
+        assert config.text_embed_dim == 2048
+        assert config.text_seq_len == 77
+
+
+class TestInferenceConfig:
+    def test_from_cli(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["prog", "--npnet_checkpoint", "/tmp/npnet_best.pth"],
+        )
+        config = InferenceConfig()
+        assert config.npnet_checkpoint == Path("/tmp/npnet_best.pth")
+        assert config.num_inference_steps == 50
+        assert config.guidance_scale == 5.5
+        assert config.image_format == "jpg"
+
+    def test_image_format_validation(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["prog", "--npnet_checkpoint", "/tmp/x.pth", "--image_format", "bmp"],
+        )
+        with pytest.raises(Exception):  # noqa: B017
+            InferenceConfig()
+
+    def test_seeds_property(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "prog",
+                "--npnet_checkpoint", "/tmp/x.pth",
+                "--seed_start", "10",
+                "--seed_range", "5",
+            ],
+        )
+        config = InferenceConfig()
+        assert config.seeds == [10, 11, 12, 13, 14]

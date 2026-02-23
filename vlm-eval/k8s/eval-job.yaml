@@ -25,6 +25,7 @@ spec:
           echo "VLM Evaluation — Seed Mining"
           echo "VLM: ${VLM_MODEL_ID}"
           echo "Seeds: ${SEED_START}..$(( SEED_START + SEED_RANGE - 1 ))"
+          echo "Num objects: ${NUM_OBJECTS}, Num settings: ${NUM_SETTINGS}"
           echo "========================================="
           echo ""
 
@@ -40,9 +41,12 @@ spec:
             --vlm_model_id "${VLM_MODEL_ID}" \
             --quantize "${QUANTIZE}" \
             --images_dir "${IMAGES_DIR}" \
+            --prompt_dataset_dir "${PROMPT_DATASET_DIR}" \
             --eval_out_dir "${EVAL_OUT_DIR}" \
             --seed_start "${SEED_START}" \
             --seed_range "${SEED_RANGE}" \
+            --num_objects "${NUM_OBJECTS}" \
+            --num_settings "${NUM_SETTINGS}" \
             --image_format "${IMAGE_FORMAT}" \
             --category "${CATEGORY}"
 
@@ -85,6 +89,10 @@ spec:
         - name: QUANTIZE
           value: "4bit"
 
+        # Prompt dataset (baked into container)
+        - name: PROMPT_DATASET_DIR
+          value: "/app/seed-mining/prompt_dataset"
+
         # Input/output
         - name: IMAGES_DIR
           value: "/output/image_gen"
@@ -93,11 +101,15 @@ spec:
         - name: SEED_START
           value: "0"
         - name: SEED_RANGE
-          value: "100"
+          value: "2"
+        - name: NUM_OBJECTS
+          value: "1"
+        - name: NUM_SETTINGS
+          value: "1"
         - name: IMAGE_FORMAT
           value: "jpg"
         - name: CATEGORY
-          value: "all"
+          value: "numeracy"
 
         # Python settings
         - name: PYTHONUNBUFFERED
