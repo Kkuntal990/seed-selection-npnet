@@ -15,7 +15,6 @@ spec:
     args:
       - |
         cd /app &&
-        pip install jupyterlab &&
         jupyter lab --ip=0.0.0.0 --no-browser --allow-root --NotebookApp.token=selfimprove
 
     resources:

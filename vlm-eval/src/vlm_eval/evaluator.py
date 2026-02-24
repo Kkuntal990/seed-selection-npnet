@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -147,7 +147,7 @@ def _evaluate_numeracy(
         "vlm_question": question,
         "vlm_response": response,
         "image_path": rel_path,
-        "timestamp_utc": datetime.now(UTC).isoformat(),
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -170,7 +170,7 @@ def _evaluate_spatial(
         "prompt_text": prompt.text,
         "spatial_prompt_raw": raw,
         "image_path": rel_path,
-        "timestamp_utc": datetime.now(UTC).isoformat(),
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
     }
 
     if parsed is None:
