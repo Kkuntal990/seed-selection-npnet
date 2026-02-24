@@ -8,9 +8,8 @@ from typing import TYPE_CHECKING
 import torch
 import torch.nn.functional as F
 from diffusers import StableDiffusionXLPipeline
+from seed_mining.logging_utils import setup_logging
 from torch.utils.data import DataLoader, random_split
-
-from seed_mining.logging_utils import ThroughputTracker, setup_logging
 
 from npnet.dataset import NoiseDataset
 from npnet.models.npnet import NPNet
@@ -102,7 +101,8 @@ def run_training(config: TrainingConfig) -> None:
             # Encode prompts with frozen SDXL text encoders
             with torch.no_grad():
                 prompt_embeds, _, _, _ = pipe.encode_prompt(
-                    prompt=list(prompts), device=device,
+                    prompt=list(prompts),
+                    device=device,
                 )
 
             golden_noise = npnet(source_noise, prompt_embeds)
@@ -132,7 +132,8 @@ def run_training(config: TrainingConfig) -> None:
                 target_noise = target_noise.to(device)
 
                 prompt_embeds, _, _, _ = pipe.encode_prompt(
-                    prompt=list(prompts), device=device,
+                    prompt=list(prompts),
+                    device=device,
                 )
 
                 golden_noise = npnet(source_noise, prompt_embeds)
@@ -145,7 +146,10 @@ def run_training(config: TrainingConfig) -> None:
 
         logger.info(
             "Epoch %d/%d: train_loss=%.6f, val_loss=%.6f",
-            epoch, config.epochs, avg_train_loss, avg_val_loss,
+            epoch,
+            config.epochs,
+            avg_train_loss,
+            avg_val_loss,
         )
 
         # Save checkpoint

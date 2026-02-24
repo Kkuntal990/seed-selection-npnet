@@ -43,8 +43,10 @@ class TestTrainingConfig:
             "argv",
             [
                 "prog",
-                "--noise_pairs_dir", "/tmp/pairs",
-                "--prompt_manifest_path", "/tmp/manifest.jsonl",
+                "--noise_pairs_dir",
+                "/tmp/pairs",
+                "--prompt_manifest_path",
+                "/tmp/manifest.jsonl",
             ],
         )
         config = TrainingConfig()
@@ -61,8 +63,10 @@ class TestTrainingConfig:
             "argv",
             [
                 "prog",
-                "--noise_pairs_dir", "/tmp/pairs",
-                "--prompt_manifest_path", "/tmp/manifest.jsonl",
+                "--noise_pairs_dir",
+                "/tmp/pairs",
+                "--prompt_manifest_path",
+                "/tmp/manifest.jsonl",
             ],
         )
         config = TrainingConfig()
@@ -100,9 +104,12 @@ class TestInferenceConfig:
             "argv",
             [
                 "prog",
-                "--npnet_checkpoint", "/tmp/x.pth",
-                "--seed_start", "10",
-                "--seed_range", "5",
+                "--npnet_checkpoint",
+                "/tmp/x.pth",
+                "--seed_start",
+                "10",
+                "--seed_range",
+                "5",
             ],
         )
         config = InferenceConfig()

@@ -39,7 +39,9 @@ class DataCollectionConfig(BaseSettings):
     width: int = 1024
 
     # --- Output ---
-    out_dir: Path = Field(default=Path("noise_pairs"), description="Output directory for .npz files")
+    out_dir: Path = Field(
+        default=Path("noise_pairs"), description="Output directory for .npz files"
+    )
     batch_size: int = 1
 
     # --- Runtime ---

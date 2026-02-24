@@ -1,0 +1,145 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: npnet-data-collection
+  labels:
+    app: npnet
+    stage: data-collection
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: npnet
+        stage: data-collection
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: collector
+          image: ghcr.io/kkuntal990/npnet:latest
+          imagePullPolicy: Always
+          command: ["/bin/bash"]
+          args:
+          - "-c"
+          - |
+            echo "========================================="
+            echo "NPNet — Data Collection (DDIM Inversion)"
+            echo "Model: ${MODEL_ID}"
+            echo "Seeds: ${SEED_START}..$(( SEED_START + SEED_RANGE - 1 ))"
+            echo "========================================="
+            echo ""
+
+            nvidia-smi
+            echo ""
+
+            echo "Starting noise pair collection..."
+            uv run python scripts/collect_noise_pairs.py \
+              --model_id "${MODEL_ID}" \
+              --prompt_dataset_dir "${PROMPT_DATASET_DIR}" \
+              --split "${SPLIT}" \
+              --num_objects "${NUM_OBJECTS}" \
+              --num_settings "${NUM_SETTINGS}" \
+              --num_inference_steps "${NUM_INFERENCE_STEPS}" \
+              --num_inversion_steps "${NUM_INVERSION_STEPS}" \
+              --guidance_scale "${GUIDANCE_SCALE}" \
+              --inversion_guidance_scale "${INVERSION_GUIDANCE_SCALE}" \
+              --seed_start "${SEED_START}" \
+              --seed_range "${SEED_RANGE}" \
+              --height "${HEIGHT}" \
+              --width "${WIDTH}" \
+              --out_dir "${OUTPUT_DIR}" \
+              --enable_cpu_offload "${ENABLE_CPU_OFFLOAD}"
+
+          resources:
+            requests:
+              cpu: "4"
+              memory: "48Gi"
+              nvidia.com/rtxa6000: "1"
+            limits:
+              cpu: "8"
+              memory: "64Gi"
+              nvidia.com/rtxa6000: "1"
+
+          volumeMounts:
+          - name: cache-volume
+            mountPath: /cache
+          - name: output
+            mountPath: /output
+          - name: dev-shm
+            mountPath: /dev/shm
+
+          env:
+          - name: HF_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: hf-token
+                key: token
+                optional: true
+          - name: HF_HOME
+            value: "/cache/hf"
+          - name: TRANSFORMERS_CACHE
+            value: "/cache/hf/transformers"
+
+          # Data collection config
+          - name: MODEL_ID
+            value: "stabilityai/stable-diffusion-xl-base-1.0"
+          - name: PROMPT_DATASET_DIR
+            value: "/app/seed-mining/prompt_dataset"
+          - name: SPLIT
+            value: "train"
+          - name: NUM_OBJECTS
+            value: "15"
+          - name: NUM_SETTINGS
+            value: "4"
+          - name: NUM_INFERENCE_STEPS
+            value: "50"
+          - name: NUM_INVERSION_STEPS
+            value: "10"
+          - name: GUIDANCE_SCALE
+            value: "5.5"
+          - name: INVERSION_GUIDANCE_SCALE
+            value: "1.0"
+          - name: SEED_START
+            value: "0"
+          - name: SEED_RANGE
+            value: "100"
+          - name: HEIGHT
+            value: "1024"
+          - name: WIDTH
+            value: "1024"
+          - name: OUTPUT_DIR
+            value: "/output/noise_pairs"
+          - name: ENABLE_CPU_OFFLOAD
+            value: "true"
+
+          - name: PYTHONUNBUFFERED
+            value: "1"
+          - name: PYTORCH_CUDA_ALLOC_CONF
+            value: "expandable_segments:True"
+
+      tolerations:
+      - effect: NoSchedule
+        key: nautilus.io/hardware
+        operator: Equal
+        value: large-gpu
+      - effect: PreferNoSchedule
+        key: nvidia.com/gpu
+        operator: Exists
+      - key: nautilus.io/reservation
+        operator: Exists
+        effect: NoSchedule
+      - key: nautilus.io/issue
+        operator: Exists
+        effect: NoSchedule
+
+      volumes:
+      - name: output
+        persistentVolumeClaim:
+          claimName: seed-mining-output
+      - name: cache-volume
+        emptyDir:
+          sizeLimit: 100Gi
+      - name: dev-shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 8Gi

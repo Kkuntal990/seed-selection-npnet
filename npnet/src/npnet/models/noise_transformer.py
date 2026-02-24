@@ -27,7 +27,7 @@ class NoiseTransformer(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = self.downconv(x)
         out = F.interpolate(out, [224, 224])
-        out = self.swin.forward_features(out)
+        out = self.swin.forward_features(out)  # type: ignore[operator]
         out = F.interpolate(out, [self.resolution, self.resolution])
-        out = self.upconv(out)
-        return out
+        result: torch.Tensor = self.upconv(out)
+        return result

@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import torch
 from diffusers import DDIMInverseScheduler, DDIMScheduler, StableDiffusionXLPipeline
-
 from seed_mining.io_utils import append_metadata_jsonl
 from seed_mining.logging_utils import ThroughputTracker, setup_logging
 from seed_mining.prompts import Prompt, build_all_prompts
@@ -39,7 +38,7 @@ def save_noise_pair(
 
 
 def _ddim_invert(
-    pipe: StableDiffusionXLPipeline,
+    pipe: Any,  # StableDiffusionXLPipeline (diffusers stubs incomplete)
     latents: torch.Tensor,
     prompt_embeds: torch.Tensor,
     negative_prompt_embeds: torch.Tensor,
@@ -61,7 +60,9 @@ def _ddim_invert(
     add_text_embeds = pooled_prompt_embeds
     text_encoder_projection_dim = int(pooled_prompt_embeds.shape[-1])
     add_time_ids = pipe._get_add_time_ids(
-        (1024, 1024), (0, 0), (1024, 1024),
+        (1024, 1024),
+        (0, 0),
+        (1024, 1024),
         dtype=dtype,
         text_encoder_projection_dim=text_encoder_projection_dim,
     ).to(device)
@@ -81,7 +82,8 @@ def _ddim_invert(
 
         with torch.no_grad():
             noise_pred = pipe.unet(
-                latent_input, t,
+                latent_input,
+                t,
                 encoder_hidden_states=pe,
                 added_cond_kwargs={"text_embeds": ate, "time_ids": ati},
                 return_dict=False,
@@ -98,7 +100,7 @@ def _ddim_invert(
 
 
 def collect_noise_pair(
-    pipe: StableDiffusionXLPipeline,
+    pipe: Any,  # StableDiffusionXLPipeline (diffusers stubs incomplete)
     prompt_text: str,
     seed: int,
     num_inference_steps: int = 50,
@@ -153,9 +155,12 @@ def collect_noise_pair(
 
     # DDIM inversion: z_0 → z_T_inv
     target_noise = _ddim_invert(
-        pipe, z_0,
-        prompt_embeds, negative_prompt_embeds,
-        pooled_prompt_embeds, negative_pooled_prompt_embeds,
+        pipe,
+        z_0,
+        prompt_embeds,
+        negative_prompt_embeds,
+        pooled_prompt_embeds,
+        negative_pooled_prompt_embeds,
         num_steps=num_inversion_steps,
         guidance_scale=inversion_guidance_scale,
     )
@@ -205,12 +210,14 @@ def run_data_collection(config: DataCollectionConfig) -> None:
     manifest_records: list[dict[str, Any]] = []
     for category, prompts in categories:
         for p in prompts:
-            manifest_records.append({
-                "category": category,
-                "prompt_id": p.prompt_id,
-                "text": p.text,
-                "metadata": p.metadata,
-            })
+            manifest_records.append(
+                {
+                    "category": category,
+                    "prompt_id": p.prompt_id,
+                    "text": p.text,
+                    "metadata": p.metadata,
+                }
+            )
     append_metadata_jsonl(manifest_path, manifest_records)
 
     for category, prompts in categories:

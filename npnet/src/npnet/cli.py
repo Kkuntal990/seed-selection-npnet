@@ -17,7 +17,7 @@ def train() -> None:
     from npnet.config import TrainingConfig
     from npnet.trainer import run_training
 
-    config = TrainingConfig()
+    config = TrainingConfig()  # type: ignore[call-arg]  # CLI provides required args
     run_training(config)
 
 
@@ -26,5 +26,5 @@ def generate() -> None:
     from npnet.config import InferenceConfig
     from npnet.inference import run_golden_generation
 
-    config = InferenceConfig()
+    config = InferenceConfig()  # type: ignore[call-arg]  # CLI provides required args
     run_golden_generation(config)

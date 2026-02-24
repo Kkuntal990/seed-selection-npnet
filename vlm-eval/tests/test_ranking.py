@@ -60,9 +60,6 @@ class TestChiSquaredTest:
 
     def test_similar_seeds(self) -> None:
         """Seeds with equal accuracies should give high p-value."""
-        scores = {
-            i: SeedScore(seed=i, correct=50, total=100, accuracy=0.5)
-            for i in range(10)
-        }
+        scores = {i: SeedScore(seed=i, correct=50, total=100, accuracy=0.5) for i in range(10)}
         chi2, p = chi_square_test(scores)
         assert p > 0.9

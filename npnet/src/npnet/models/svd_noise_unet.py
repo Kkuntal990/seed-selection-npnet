@@ -56,4 +56,5 @@ class SVDNoiseUnet(nn.Module):
         out = self.mlp4(out).mean(1) + s
 
         pred = U @ torch.diag_embed(out) @ V
-        return einops.rearrange(pred, "b (a h) (c w) -> b (a c) h w", a=2, c=2)
+        result: torch.Tensor = einops.rearrange(pred, "b (a h) (c w) -> b (a c) h w", a=2, c=2)
+        return result

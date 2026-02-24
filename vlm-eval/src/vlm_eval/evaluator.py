@@ -14,8 +14,6 @@ from seed_mining.logging_utils import ThroughputTracker, setup_logging
 from seed_mining.prompts import Prompt, build_all_prompts
 
 if TYPE_CHECKING:
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-
     from vlm_eval.eval_config import EvalConfig
 
 logger = logging.getLogger("vlm_eval.evaluator")
@@ -51,16 +49,17 @@ def _parse_spatial_prompt(text: str) -> tuple[str, str, str] | None:
 
 
 def load_vlm(
-    model_id: str, quantize: str | None = "4bit", device: str = "cuda"
-) -> tuple[AutoModelForCausalLM, AutoTokenizer]:
-    """Load a CogVLM2 model and tokenizer."""
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    model_id: str,
+    quantize: str | None = "4bit",
+) -> tuple[Any, Any]:
+    """Load a Qwen2.5-VL model and processor."""
+    from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
-    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+    processor = AutoProcessor.from_pretrained(model_id)
 
     load_kwargs: dict[str, Any] = {
-        "trust_remote_code": True,
         "torch_dtype": torch.bfloat16,
+        "device_map": "auto",
     }
 
     if quantize == "4bit":
@@ -74,40 +73,50 @@ def load_vlm(
         from transformers import BitsAndBytesConfig
 
         load_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
-    else:
-        load_kwargs["device_map"] = device
 
-    model = AutoModelForCausalLM.from_pretrained(model_id, **load_kwargs)
-    model.eval()  # type: ignore[union-attr]
-    return model, tokenizer  # type: ignore[return-value]
+    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_id, **load_kwargs)
+    model.eval()
+    return model, processor
 
 
 def _query_vlm(
-    model: AutoModelForCausalLM,
-    tokenizer: AutoTokenizer,
+    model: Any,
+    processor: Any,
     image: Image.Image,
     question: str,
 ) -> str:
     """Send a single image+question to the VLM and return the response text."""
-    input_by_model = model.build_conversation_input_ids(  # type: ignore[union-attr]
-        tokenizer,
-        query=question,
-        images=[image],
-    )
-    inputs = {
-        "input_ids": input_by_model["input_ids"].unsqueeze(0).to(model.device),  # type: ignore[union-attr]
-        "token_type_ids": input_by_model["token_type_ids"].unsqueeze(0).to(model.device),  # type: ignore[union-attr]
-        "attention_mask": input_by_model["attention_mask"].unsqueeze(0).to(model.device),  # type: ignore[union-attr]
-        "images": [[input_by_model["images"][0].to(model.device, dtype=torch.bfloat16)]],  # type: ignore[union-attr]
-    }
+    from qwen_vl_utils import process_vision_info
+
+    messages: list[dict[str, Any]] = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "image": image},
+                {"type": "text", "text": question},
+            ],
+        }
+    ]
+
+    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    image_inputs, video_inputs = process_vision_info(messages)
+    inputs = processor(
+        text=[text],
+        images=image_inputs,
+        videos=video_inputs,
+        padding=True,
+        return_tensors="pt",
+    ).to(model.device)
 
     with torch.inference_mode():
-        outputs = model.generate(**inputs, max_new_tokens=256, do_sample=False)  # type: ignore[union-attr]
+        output_ids = model.generate(**inputs, max_new_tokens=256, do_sample=False)
 
-    # Decode only the new tokens
-    input_len = inputs["input_ids"].shape[1]
-    response = tokenizer.decode(outputs[0][input_len:], skip_special_tokens=True)  # type: ignore[union-attr]
-    return response.strip()  # type: ignore[no-any-return]
+    # Trim prompt tokens — keep only generated tokens
+    generated = [out[len(inp) :] for inp, out in zip(inputs.input_ids, output_ids, strict=True)]
+    response = processor.batch_decode(
+        generated, skip_special_tokens=True, clean_up_tokenization_spaces=False
+    )
+    return str(response[0]).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -116,8 +125,8 @@ def _query_vlm(
 
 
 def _evaluate_numeracy(
-    model: AutoModelForCausalLM,
-    tokenizer: AutoTokenizer,
+    model: Any,
+    processor: Any,
     img: Image.Image,
     prompt: Prompt,
     seed: int,
@@ -126,7 +135,7 @@ def _evaluate_numeracy(
     """Evaluate one numeracy image."""
     objects = prompt.metadata["object_plural"]
     question = NUMERACY_TEMPLATE.format(objects=objects)
-    response = _query_vlm(model, tokenizer, img, question)
+    response = _query_vlm(model, processor, img, question)
 
     return {
         "seed": seed,
@@ -143,8 +152,8 @@ def _evaluate_numeracy(
 
 
 def _evaluate_spatial(
-    model: AutoModelForCausalLM,
-    tokenizer: AutoTokenizer,
+    model: Any,
+    processor: Any,
     img: Image.Image,
     prompt: Prompt,
     seed: int,
@@ -177,13 +186,13 @@ def _evaluate_spatial(
     record["expected_relation"] = relation
 
     # Step 1: describe positions
-    response_1 = _query_vlm(model, tokenizer, img, SPATIAL_DESCRIBE)
+    response_1 = _query_vlm(model, processor, img, SPATIAL_DESCRIBE)
     record["vlm_question_1"] = SPATIAL_DESCRIBE
     record["vlm_response_1"] = response_1
 
     # Step 2: verify relation
     question_2 = SPATIAL_VERIFY.format(obj_a=obj_a, relation=relation, obj_b=obj_b)
-    response_2 = _query_vlm(model, tokenizer, img, question_2)
+    response_2 = _query_vlm(model, processor, img, question_2)
     record["vlm_question_2"] = question_2
     record["vlm_response_2"] = response_2
 
@@ -217,7 +226,7 @@ def run_evaluation(config: EvalConfig) -> None:
 
     # Load VLM
     logger.info("Loading VLM: %s (quantize=%s) ...", config.vlm_model_id, config.quantize)
-    model, tokenizer = load_vlm(config.vlm_model_id, config.quantize)
+    model, processor = load_vlm(config.vlm_model_id, config.quantize)
     logger.info("VLM loaded")
 
     for category, prompts in categories:
@@ -225,7 +234,12 @@ def run_evaluation(config: EvalConfig) -> None:
 
         # Resume: find already-evaluated (seed, prompt_id) pairs
         existing = load_existing_keys(responses_path)
-        logger.info("[%s] %d already evaluated, %d total", category, len(existing), len(seeds) * len(prompts))
+        logger.info(
+            "[%s] %d already evaluated, %d total",
+            category,
+            len(existing),
+            len(seeds) * len(prompts),
+        )
 
         for seed in seeds:
             todo = [p for p in prompts if (seed, p.prompt_id) not in existing]
@@ -236,7 +250,13 @@ def run_evaluation(config: EvalConfig) -> None:
                 continue
 
             tracker.update(skipped)
-            logger.info("Seed %d [%s]: evaluating %d images (%d skipped)", seed, category, len(todo), skipped)
+            logger.info(
+                "Seed %d [%s]: evaluating %d images (%d skipped)",
+                seed,
+                category,
+                len(todo),
+                skipped,
+            )
 
             records: list[dict[str, Any]] = []
             for prompt in todo:
@@ -252,9 +272,9 @@ def run_evaluation(config: EvalConfig) -> None:
                 rel = str(img_path.relative_to(config.images_dir))
 
                 if category == "numeracy":
-                    rec = _evaluate_numeracy(model, tokenizer, img, prompt, seed, rel)
+                    rec = _evaluate_numeracy(model, processor, img, prompt, seed, rel)
                 else:
-                    rec = _evaluate_spatial(model, tokenizer, img, prompt, seed, rel)
+                    rec = _evaluate_spatial(model, processor, img, prompt, seed, rel)
 
                 records.append(rec)
                 tracker.update(1)

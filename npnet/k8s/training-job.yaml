@@ -1,0 +1,132 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: npnet-training
+  labels:
+    app: npnet
+    stage: training
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: npnet
+        stage: training
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: trainer
+          image: ghcr.io/kkuntal990/npnet:latest
+          imagePullPolicy: Always
+          command: ["/bin/bash"]
+          args:
+          - "-c"
+          - |
+            echo "========================================="
+            echo "NPNet — Training"
+            echo "Epochs: ${EPOCHS}, Batch: ${BATCH_SIZE}, LR: ${LR}"
+            echo "========================================="
+            echo ""
+
+            nvidia-smi
+            echo ""
+
+            echo "Starting NPNet training..."
+            uv run python scripts/train_npnet.py \
+              --model_id "${MODEL_ID}" \
+              --noise_pairs_dir "${NOISE_PAIRS_DIR}" \
+              --prompt_manifest_path "${PROMPT_MANIFEST_PATH}" \
+              --epochs "${EPOCHS}" \
+              --batch_size "${BATCH_SIZE}" \
+              --lr "${LR}" \
+              --grad_accumulation_steps "${GRAD_ACCUMULATION_STEPS}" \
+              --val_split "${VAL_SPLIT}" \
+              --checkpoint_dir "${CHECKPOINT_DIR}" \
+              --save_every_n_epochs "${SAVE_EVERY_N_EPOCHS}" \
+              --enable_cpu_offload "${ENABLE_CPU_OFFLOAD}"
+
+          resources:
+            requests:
+              cpu: "4"
+              memory: "32Gi"
+              nvidia.com/rtxa6000: "1"
+            limits:
+              cpu: "8"
+              memory: "48Gi"
+              nvidia.com/rtxa6000: "1"
+
+          volumeMounts:
+          - name: cache-volume
+            mountPath: /cache
+          - name: output
+            mountPath: /output
+          - name: dev-shm
+            mountPath: /dev/shm
+
+          env:
+          - name: HF_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: hf-token
+                key: token
+                optional: true
+          - name: HF_HOME
+            value: "/cache/hf"
+          - name: TRANSFORMERS_CACHE
+            value: "/cache/hf/transformers"
+
+          # Training config
+          - name: MODEL_ID
+            value: "stabilityai/stable-diffusion-xl-base-1.0"
+          - name: NOISE_PAIRS_DIR
+            value: "/output/noise_pairs"
+          - name: PROMPT_MANIFEST_PATH
+            value: "/output/noise_pairs/prompt_manifest.jsonl"
+          - name: EPOCHS
+            value: "30"
+          - name: BATCH_SIZE
+            value: "64"
+          - name: LR
+            value: "0.0001"
+          - name: GRAD_ACCUMULATION_STEPS
+            value: "1"
+          - name: VAL_SPLIT
+            value: "0.1"
+          - name: CHECKPOINT_DIR
+            value: "/output/npnet_checkpoints"
+          - name: SAVE_EVERY_N_EPOCHS
+            value: "5"
+          - name: ENABLE_CPU_OFFLOAD
+            value: "true"
+
+          - name: PYTHONUNBUFFERED
+            value: "1"
+          - name: PYTORCH_CUDA_ALLOC_CONF
+            value: "expandable_segments:True"
+
+      tolerations:
+      - effect: NoSchedule
+        key: nautilus.io/hardware
+        operator: Equal
+        value: large-gpu
+      - effect: PreferNoSchedule
+        key: nvidia.com/gpu
+        operator: Exists
+      - key: nautilus.io/reservation
+        operator: Exists
+        effect: NoSchedule
+      - key: nautilus.io/issue
+        operator: Exists
+        effect: NoSchedule
+
+      volumes:
+      - name: output
+        persistentVolumeClaim:
+          claimName: seed-mining-output
+      - name: cache-volume
+        emptyDir:
+          sizeLimit: 100Gi
+      - name: dev-shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 8Gi

@@ -6,7 +6,8 @@ requires-python = ">=3.11"
 dependencies = [
     "seed-mining",
     "torch>=2.1",
-    "transformers>=4.36,<=4.45",
+    "transformers>=4.49",
+    "qwen-vl-utils>=0.0.8",
     "pydantic>=2.5",
     "pydantic-settings>=2.1",
     "Pillow>=10.0",

@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 
 import torch
 from diffusers import DPMSolverMultistepScheduler, StableDiffusionXLPipeline
-
 from seed_mining.io_utils import image_path, save_image_atomic
 from seed_mining.logging_utils import ThroughputTracker, setup_logging
 from seed_mining.prompts import Prompt, build_all_prompts
@@ -71,7 +70,9 @@ def run_golden_generation(config: InferenceConfig) -> None:
     for category, prompts in categories:
         for seed in seeds:
             for prompt in prompts:
-                dest = image_path(config.out_dir, category, seed, prompt.prompt_id, config.image_format)
+                dest = image_path(
+                    config.out_dir, category, seed, prompt.prompt_id, config.image_format
+                )
                 if dest.exists():
                     tracker.update(1)
                     continue
@@ -79,7 +80,10 @@ def run_golden_generation(config: InferenceConfig) -> None:
                 # Generate random noise
                 generator = torch.Generator(device=config.generator_device).manual_seed(seed)
                 latent = torch.randn(
-                    1, 4, config.height // 8, config.width // 8,
+                    1,
+                    4,
+                    config.height // 8,
+                    config.width // 8,
                     generator=generator,
                     dtype=torch.float16,
                 ).to(device)
@@ -87,7 +91,8 @@ def run_golden_generation(config: InferenceConfig) -> None:
                 # Encode prompt + transform to golden noise
                 with torch.no_grad():
                     prompt_embeds, _, _, _ = pipe.encode_prompt(
-                        prompt=prompt.text, device=device,
+                        prompt=prompt.text,
+                        device=device,
                     )
                     golden_latent = npnet(latent, prompt_embeds).half()
 

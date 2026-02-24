@@ -16,7 +16,7 @@ class EvalConfig(BaseSettings):
 
     # --- VLM model ---
     vlm_model_id: str = Field(
-        default="THUDM/cogvlm2-llama3-chat-19B",
+        default="Qwen/Qwen2.5-VL-7B-Instruct",
         description="HuggingFace model ID for the VLM",
     )
     quantize: str | None = Field(
@@ -24,7 +24,9 @@ class EvalConfig(BaseSettings):
     )
 
     # --- Input (must match generation config) ---
-    images_dir: Path = Field(description="Directory containing generated images (generation out_dir)")
+    images_dir: Path = Field(
+        description="Directory containing generated images (generation out_dir)"
+    )
     prompt_dataset_dir: Path = Field(
         default=Path("prompt_dataset"), description="Directory with prompt data files"
     )
@@ -37,7 +39,9 @@ class EvalConfig(BaseSettings):
     image_format: str = "jpg"
 
     # --- Output ---
-    eval_out_dir: Path = Field(default=Path("eval_output"), description="Evaluation results directory")
+    eval_out_dir: Path = Field(
+        default=Path("eval_output"), description="Evaluation results directory"
+    )
 
     # --- Scope ---
     category: str = Field(

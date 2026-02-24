@@ -1,7 +1,8 @@
-"""Seed ranking: compute per-seed accuracy and chi-squared test."""
+"""Seed ranking: compute per-seed accuracy, per-prompt accuracy, and chi-squared test."""
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 from collections import defaultdict
@@ -29,6 +30,17 @@ class SeedScore:
     accuracy: float
 
 
+@dataclass
+class PromptScore:
+    """Accuracy score for one prompt across all seeds."""
+
+    prompt_id: int
+    prompt_text: str
+    correct: int
+    total: int
+    accuracy: float
+
+
 def load_eval_responses(path: Path) -> list[dict[str, Any]]:
     """Load evaluation responses from a JSONL file."""
     records: list[dict[str, Any]] = []
@@ -38,6 +50,16 @@ def load_eval_responses(path: Path) -> list[dict[str, Any]]:
             continue
         records.append(json.loads(line))
     return records
+
+
+def _is_correct(rec: dict[str, Any], category: str) -> bool:
+    """Determine if a single evaluation record is correct."""
+    if category == "numeracy":
+        detected = get_number_from_response(rec["vlm_response"])
+        return detected is not None and detected == rec["count_target"]
+    # spatial
+    answer = extract_spatial_answer(rec.get("vlm_response_2", ""))
+    return answer is True
 
 
 def compute_seed_accuracy(
@@ -51,15 +73,8 @@ def compute_seed_accuracy(
     for rec in responses:
         seed = rec["seed"]
         seed_total[seed] += 1
-
-        if category == "numeracy":
-            detected = get_number_from_response(rec["vlm_response"])
-            if detected is not None and detected == rec["count_target"]:
-                seed_correct[seed] += 1
-        else:
-            answer = extract_spatial_answer(rec.get("vlm_response_2", ""))
-            if answer is True:
-                seed_correct[seed] += 1
+        if _is_correct(rec, category):
+            seed_correct[seed] += 1
 
     scores: dict[int, SeedScore] = {}
     for seed in sorted(seed_total):
@@ -67,6 +82,64 @@ def compute_seed_accuracy(
         t = seed_total[seed]
         scores[seed] = SeedScore(seed=seed, correct=c, total=t, accuracy=c / t if t > 0 else 0.0)
     return scores
+
+
+def compute_prompt_accuracy(
+    responses: list[dict[str, Any]],
+    category: str,
+) -> dict[int, PromptScore]:
+    """Compute per-prompt accuracy across all seeds."""
+    prompt_correct: dict[int, int] = defaultdict(int)
+    prompt_total: dict[int, int] = defaultdict(int)
+    prompt_text_map: dict[int, str] = {}
+
+    for rec in responses:
+        pid = rec["prompt_id"]
+        prompt_total[pid] += 1
+        prompt_text_map[pid] = rec.get("prompt_text", "")
+        if _is_correct(rec, category):
+            prompt_correct[pid] += 1
+
+    scores: dict[int, PromptScore] = {}
+    for pid in sorted(prompt_total):
+        c = prompt_correct[pid]
+        t = prompt_total[pid]
+        scores[pid] = PromptScore(
+            prompt_id=pid,
+            prompt_text=prompt_text_map.get(pid, ""),
+            correct=c,
+            total=t,
+            accuracy=c / t if t > 0 else 0.0,
+        )
+    return scores
+
+
+def compute_seed_prompt_matrix(
+    responses: list[dict[str, Any]],
+    category: str,
+) -> dict[tuple[int, int], bool]:
+    """Build a (seed, prompt_id) → correct mapping."""
+    matrix: dict[tuple[int, int], bool] = {}
+    for rec in responses:
+        key = (rec["seed"], rec["prompt_id"])
+        matrix[key] = _is_correct(rec, category)
+    return matrix
+
+
+def write_seed_prompt_csv(
+    matrix: dict[tuple[int, int], bool],
+    seeds: list[int],
+    prompt_ids: list[int],
+    path: Path,
+) -> None:
+    """Write seed × prompt correctness matrix as CSV."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["seed"] + [f"p{pid}" for pid in prompt_ids])
+        for seed in seeds:
+            row = [seed] + [int(matrix.get((seed, pid), False)) for pid in prompt_ids]
+            writer.writerow(row)
 
 
 def chi_square_test(seed_scores: dict[int, SeedScore]) -> tuple[float, float]:
@@ -105,14 +178,13 @@ def run_ranking(config: RankingConfig) -> None:
 
         logger.info("[%s] Loaded %d responses", category, len(responses))
 
+        # --- Per-seed ranking (existing) ---
         scores = compute_seed_accuracy(responses, category)
         ranked = sorted(scores.values(), key=lambda s: s.accuracy, reverse=True)
 
-        # Chi-squared test
         chi2, p_value = chi_square_test(scores)
         logger.info("[%s] Chi-squared: %.2f, p-value: %.2e", category, chi2, p_value)
 
-        # Write outputs
         out_dir = config.output_dir / category
         out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -145,3 +217,51 @@ def run_ranking(config: RankingConfig) -> None:
         report = "\n".join(lines)
         (out_dir / "ranking_report.txt").write_text(report)
         logger.info("\n%s", report)
+
+        # --- Per-prompt ranking (new) ---
+        prompt_scores = compute_prompt_accuracy(responses, category)
+        prompt_ranked = sorted(prompt_scores.values(), key=lambda s: s.accuracy, reverse=True)
+
+        prompt_result = {
+            "category": category,
+            "num_prompts": len(prompt_ranked),
+            "prompts_ranked": [asdict(s) for s in prompt_ranked],
+        }
+        (out_dir / "prompt_accuracy.json").write_text(json.dumps(prompt_result, indent=2) + "\n")
+
+        # prompt_ranking_report.txt
+        p_lines = [
+            f"=== {category.upper()} Per-Prompt Accuracy ===",
+            f"Prompts evaluated: {len(prompt_ranked)}",
+            "",
+            f"Easiest {config.top_k} prompts (highest accuracy):",
+        ]
+        for ps in prompt_ranked[: config.top_k]:
+            p_lines.append(
+                f"  prompt_id={ps.prompt_id:4d}  accuracy={ps.accuracy:.3f}"
+                f"  ({ps.correct}/{ps.total})  {ps.prompt_text[:60]}"
+            )
+        p_lines.append("")
+        p_lines.append(f"Hardest {config.top_k} prompts (lowest accuracy):")
+        for ps in prompt_ranked[-config.top_k :]:
+            p_lines.append(
+                f"  prompt_id={ps.prompt_id:4d}  accuracy={ps.accuracy:.3f}"
+                f"  ({ps.correct}/{ps.total})  {ps.prompt_text[:60]}"
+            )
+        p_lines.append("")
+
+        p_report = "\n".join(p_lines)
+        (out_dir / "prompt_ranking_report.txt").write_text(p_report)
+        logger.info("\n%s", p_report)
+
+        # --- Seed × Prompt matrix (new) ---
+        matrix = compute_seed_prompt_matrix(responses, category)
+        all_seeds = sorted({rec["seed"] for rec in responses})
+        all_prompt_ids = sorted({rec["prompt_id"] for rec in responses})
+        write_seed_prompt_csv(matrix, all_seeds, all_prompt_ids, out_dir / "seed_prompt_matrix.csv")
+        logger.info(
+            "[%s] Seed×Prompt matrix written (%d seeds × %d prompts)",
+            category,
+            len(all_seeds),
+            len(all_prompt_ids),
+        )

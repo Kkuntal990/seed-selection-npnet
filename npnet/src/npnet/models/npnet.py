@@ -67,7 +67,7 @@ class NPNet(nn.Module):
         prompt_flat = prompt_embeds.float().view(prompt_embeds.shape[0], -1)
         text_emb = self.text_embedding(initial_noise.float(), prompt_flat)
 
-        golden_noise = (
+        golden_noise: torch.Tensor = (
             self.unet_svd(initial_noise.float())
             + (2 * torch.sigmoid(self._alpha) - 1) * text_emb
             + self._beta * self.unet_embedding((initial_noise + text_emb).float())
@@ -95,6 +95,14 @@ class NPNet(nn.Module):
         self.unet_svd.load_state_dict(ckpt["unet_svd"])
         self.unet_embedding.load_state_dict(ckpt["unet_embedding"])
         self.text_embedding.load_state_dict(ckpt["embeeding"])
-        self._alpha.data = ckpt["alpha"].data if isinstance(ckpt["alpha"], torch.Tensor) else torch.tensor([ckpt["alpha"]])
-        self._beta.data = ckpt["beta"].data if isinstance(ckpt["beta"], torch.Tensor) else torch.tensor([ckpt["beta"]])
+        self._alpha.data = (
+            ckpt["alpha"].data
+            if isinstance(ckpt["alpha"], torch.Tensor)
+            else torch.tensor([ckpt["alpha"]])
+        )
+        self._beta.data = (
+            ckpt["beta"].data
+            if isinstance(ckpt["beta"], torch.Tensor)
+            else torch.tensor([ckpt["beta"]])
+        )
         logger.info("Checkpoint loaded: %s", path)
