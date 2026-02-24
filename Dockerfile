@@ -16,39 +16,47 @@ ENV PATH="/root/.local/bin:$PATH"
 
 WORKDIR /app
 
-# --- Copy all subprojects ---
+# ---- Layer 1: pyproject.toml only (cached unless deps change) ----
 
-# seed-mining (base dependency for vlm-eval and npnet)
 COPY seed-mining/pyproject.toml seed-mining/pyproject.toml
+COPY vlm-eval/pyproject.toml vlm-eval/pyproject.toml
+COPY npnet/pyproject.toml npnet/pyproject.toml
+
+# Stub src dirs so uv sync can resolve the local path deps
+RUN mkdir -p seed-mining/src/seed_mining && touch seed-mining/src/seed_mining/__init__.py \
+    && mkdir -p vlm-eval/src/vlm_eval && touch vlm-eval/src/vlm_eval/__init__.py \
+    && mkdir -p npnet/src/npnet && touch npnet/src/npnet/__init__.py
+
+# Install all deps (this layer is cached until a pyproject.toml changes)
+WORKDIR /app/seed-mining
+RUN uv sync --no-dev
+WORKDIR /app/vlm-eval
+RUN uv sync --no-dev
+WORKDIR /app/npnet
+RUN uv sync --no-dev
+
+# ---- Layer 2: actual source code (changes frequently, but deps are cached) ----
+
+WORKDIR /app
+
 COPY seed-mining/src/ seed-mining/src/
 COPY seed-mining/prompt_dataset/ seed-mining/prompt_dataset/
 COPY seed-mining/scripts/ seed-mining/scripts/
 
-# vlm-eval
-COPY vlm-eval/pyproject.toml vlm-eval/pyproject.toml
 COPY vlm-eval/src/ vlm-eval/src/
 COPY vlm-eval/scripts/ vlm-eval/scripts/
 
-# npnet
-COPY npnet/pyproject.toml npnet/pyproject.toml
 COPY npnet/src/ npnet/src/
 COPY npnet/scripts/ npnet/scripts/
 
-# --- Install each project ---
-
-# seed-mining
+# Re-install in editable-like mode so the new source is picked up
 WORKDIR /app/seed-mining
 RUN uv sync --no-dev
-
-# vlm-eval (depends on seed-mining via path)
 WORKDIR /app/vlm-eval
 RUN uv sync --no-dev
-
-# npnet (depends on seed-mining via path)
 WORKDIR /app/npnet
 RUN uv sync --no-dev
 
 WORKDIR /app
 
-# No fixed entrypoint — use as general-purpose image for jobs or Jupyter
 CMD ["/bin/bash"]

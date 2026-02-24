@@ -1,49 +1,54 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: npnet-training
+  name: npnet-inference
   labels:
     app: npnet
-    stage: training
+    stage: inference
 spec:
   backoffLimit: 3
   template:
     metadata:
       labels:
         app: npnet
-        stage: training
+        stage: inference
     spec:
       restartPolicy: OnFailure
       containers:
-        - name: trainer
-          image: ghcr.io/kkuntal990/npnet:latest
+        - name: generator
+          image: ghcr.io/kkuntal990/seed-mining:latest
           imagePullPolicy: Always
           command: ["/bin/bash"]
           args:
           - "-c"
           - |
             echo "========================================="
-            echo "NPNet — Training"
-            echo "Epochs: ${EPOCHS}, Batch: ${BATCH_SIZE}, LR: ${LR}"
+            echo "NPNet — Golden Noise Inference"
+            echo "Model: ${MODEL_ID}"
+            echo "Checkpoint: ${NPNET_CHECKPOINT}"
+            echo "Seeds: ${SEED_START}..$(( SEED_START + SEED_RANGE - 1 ))"
             echo "========================================="
             echo ""
 
             nvidia-smi
             echo ""
 
-            echo "Starting NPNet training..."
-            uv run python scripts/train_npnet.py \
+            echo "Starting golden noise image generation..."
+            cd /app/npnet && uv run python scripts/generate_golden_noise.py \
               --model_id "${MODEL_ID}" \
-              --noise_pairs_dir "${NOISE_PAIRS_DIR}" \
-              --prompt_manifest_path "${PROMPT_MANIFEST_PATH}" \
-              --epochs "${EPOCHS}" \
-              --batch_size "${BATCH_SIZE}" \
-              --lr "${LR}" \
-              --grad_accumulation_steps "${GRAD_ACCUMULATION_STEPS}" \
-              --val_split "${VAL_SPLIT}" \
-              --checkpoint_dir "${CHECKPOINT_DIR}" \
-              --save_every_n_epochs "${SAVE_EVERY_N_EPOCHS}" \
-              --enable_cpu_offload "${ENABLE_CPU_OFFLOAD}"
+              --npnet_checkpoint "${NPNET_CHECKPOINT}" \
+              --prompt_dataset_dir "${PROMPT_DATASET_DIR}" \
+              --split "${SPLIT}" \
+              --num_objects "${NUM_OBJECTS}" \
+              --num_settings "${NUM_SETTINGS}" \
+              --num_inference_steps "${NUM_INFERENCE_STEPS}" \
+              --guidance_scale "${GUIDANCE_SCALE}" \
+              --seed_start "${SEED_START}" \
+              --seed_range "${SEED_RANGE}" \
+              --height "${HEIGHT}" \
+              --width "${WIDTH}" \
+              --out_dir "${OUTPUT_DIR}" \
+              --image_format "${IMAGE_FORMAT}"
 
           resources:
             requests:
@@ -75,29 +80,35 @@ spec:
           - name: TRANSFORMERS_CACHE
             value: "/cache/hf/transformers"
 
-          # Training config
+          # Inference config
           - name: MODEL_ID
             value: "stabilityai/stable-diffusion-xl-base-1.0"
-          - name: NOISE_PAIRS_DIR
-            value: "/output/noise_pairs"
-          - name: PROMPT_MANIFEST_PATH
-            value: "/output/noise_pairs/prompt_manifest.jsonl"
-          - name: EPOCHS
-            value: "30"
-          - name: BATCH_SIZE
-            value: "64"
-          - name: LR
-            value: "0.0001"
-          - name: GRAD_ACCUMULATION_STEPS
-            value: "1"
-          - name: VAL_SPLIT
-            value: "0.1"
-          - name: CHECKPOINT_DIR
-            value: "/output/npnet_checkpoints"
-          - name: SAVE_EVERY_N_EPOCHS
-            value: "5"
-          - name: ENABLE_CPU_OFFLOAD
-            value: "true"
+          - name: NPNET_CHECKPOINT
+            value: "/output/npnet_checkpoints/npnet_best.pth"
+          - name: PROMPT_DATASET_DIR
+            value: "/app/seed-mining/prompt_dataset"
+          - name: SPLIT
+            value: "train"
+          - name: NUM_OBJECTS
+            value: "15"
+          - name: NUM_SETTINGS
+            value: "4"
+          - name: NUM_INFERENCE_STEPS
+            value: "50"
+          - name: GUIDANCE_SCALE
+            value: "5.5"
+          - name: SEED_START
+            value: "0"
+          - name: SEED_RANGE
+            value: "100"
+          - name: HEIGHT
+            value: "1024"
+          - name: WIDTH
+            value: "1024"
+          - name: OUTPUT_DIR
+            value: "/output/golden_output"
+          - name: IMAGE_FORMAT
+            value: "jpg"
 
           - name: PYTHONUNBUFFERED
             value: "1"

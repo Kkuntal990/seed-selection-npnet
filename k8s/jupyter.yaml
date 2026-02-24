@@ -1,31 +1,32 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: seed-mining-debug
+  name: ece271b-jupyter
   labels:
-    app: sd-mining
-    task: seed-mining
+    app: ece271b
+    task: jupyter
 spec:
   restartPolicy: Never
   containers:
   - name: jupyter-container
     image: ghcr.io/kkuntal990/seed-mining:latest
+    imagePullPolicy: Always
     command: ["/bin/bash", "-c"]
     args:
       - |
         cd /app &&
-        uv pip install sentencepiece protobuf jupyterlab &&
-        uv run jupyter lab --ip=0.0.0.0 --no-browser --allow-root --NotebookApp.token=selfimprove
+        pip install jupyterlab &&
+        jupyter lab --ip=0.0.0.0 --no-browser --allow-root --NotebookApp.token=selfimprove
 
     resources:
       limits:
         nvidia.com/rtxa6000: "1"
-        memory: "16Gi"
-        cpu: "2"
+        memory: "32Gi"
+        cpu: "4"
       requests:
         nvidia.com/rtxa6000: "1"
-        memory: "16Gi"
-        cpu: "2"
+        memory: "32Gi"
+        cpu: "4"
 
     volumeMounts:
       - name: cache-volume
@@ -36,19 +37,21 @@ spec:
         mountPath: /dev/shm
 
     env:
-    # HuggingFace token (required for reward model)
     - name: HF_TOKEN
       valueFrom:
         secretKeyRef:
           name: hf-token
           key: token
           optional: true
-
-    # Python and CUDA settings
+    - name: HF_HOME
+      value: "/cache/hf"
+    - name: TRANSFORMERS_CACHE
+      value: "/cache/hf/transformers"
     - name: PYTHONUNBUFFERED
       value: "1"
     - name: PYTORCH_CUDA_ALLOC_CONF
       value: "expandable_segments:True"
+
   tolerations:
     - effect: NoSchedule
       key: nautilus.io/hardware
@@ -67,7 +70,7 @@ spec:
   volumes:
     - name: output
       persistentVolumeClaim:
-        claimName: seed-mining-output  # Create PVC separately
+        claimName: seed-mining-output
     - name: cache-volume
       emptyDir:
         sizeLimit: 100Gi

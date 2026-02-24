@@ -16,7 +16,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: collector
-          image: ghcr.io/kkuntal990/npnet:latest
+          image: ghcr.io/kkuntal990/seed-mining:latest
           imagePullPolicy: Always
           command: ["/bin/bash"]
           args:
@@ -33,7 +33,7 @@ spec:
             echo ""
 
             echo "Starting noise pair collection..."
-            uv run python scripts/collect_noise_pairs.py \
+            cd /app/npnet && uv run python scripts/collect_noise_pairs.py \
               --model_id "${MODEL_ID}" \
               --prompt_dataset_dir "${PROMPT_DATASET_DIR}" \
               --split "${SPLIT}" \

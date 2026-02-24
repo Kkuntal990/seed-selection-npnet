@@ -41,7 +41,7 @@ spec:
           # Start generation with accelerate
           echo "Starting multi-GPU image generation..."
           echo ""
-          uv run accelerate launch \
+          cd /app/seed-mining && uv run accelerate launch \
             --num_processes "${NPROC}" \
             scripts/generate_seed_mining_images.py \
             --model_id "${MODEL_ID}" \

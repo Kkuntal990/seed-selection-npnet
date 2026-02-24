@@ -15,7 +15,7 @@ spec:
 
       containers:
       - name: evaluator
-        image: ghcr.io/kkuntal990/vlm-eval:latest
+        image: ghcr.io/kkuntal990/seed-mining:latest
         imagePullPolicy: Always
         command: ["/bin/bash"]
         args:
@@ -37,7 +37,7 @@ spec:
           # Start evaluation
           echo "Starting VLM evaluation..."
           echo ""
-          uv run python scripts/run_evaluation.py \
+          cd /app/vlm-eval && uv run python scripts/run_evaluation.py \
             --vlm_model_id "${VLM_MODEL_ID}" \
             --quantize "${QUANTIZE}" \
             --images_dir "${IMAGES_DIR}" \
