@@ -28,10 +28,9 @@ RUN mkdir -p seed-mining/src/seed_mining && touch seed-mining/src/seed_mining/__
     && mkdir -p npnet/src/npnet && touch npnet/src/npnet/__init__.py
 
 # Install all deps into system Python (cached until a pyproject.toml changes)
-RUN uv pip install --system -e ./seed-mining -e ./vlm-eval -e ./npnet
-
-# Install jupyterlab so Jupyter pods don't need to pip install at runtime
-RUN uv pip install --system jupyterlab
+# Only install vlm-eval and npnet — they pull in seed-mining as a path dependency
+RUN uv pip install --system -e ./vlm-eval -e ./npnet && \
+    uv pip install --system jupyterlab
 
 # ---- Layer 2: actual source code (changes frequently, but deps are cached) ----
 
@@ -45,7 +44,7 @@ COPY vlm-eval/scripts/ vlm-eval/scripts/
 COPY npnet/src/ npnet/src/
 COPY npnet/scripts/ npnet/scripts/
 
-# Re-install editable packages (no-deps since deps are cached, just picks up new source)
+# Re-install editable packages so new source is picked up (no-deps = fast, deps cached)
 RUN uv pip install --system --no-deps -e ./seed-mining -e ./vlm-eval -e ./npnet
 
 WORKDIR /app
