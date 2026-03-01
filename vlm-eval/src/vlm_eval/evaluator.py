@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 from PIL import Image
+from tqdm.auto import tqdm
+
 from seed_mining.io_utils import append_metadata_jsonl, image_path, load_existing_keys
 from seed_mining.logging_utils import ThroughputTracker, setup_logging
 from seed_mining.prompts import Prompt, build_all_prompts
@@ -229,6 +231,8 @@ def run_evaluation(config: EvalConfig) -> None:
     model, processor = load_vlm(config.vlm_model_id, config.quantize)
     logger.info("VLM loaded")
 
+    pbar = tqdm(total=total, desc="VLM eval", unit="img")
+
     for category, prompts in categories:
         responses_path = config.eval_out_dir / "responses" / f"{category}_responses.jsonl"
 
@@ -247,16 +251,12 @@ def run_evaluation(config: EvalConfig) -> None:
 
             if not todo:
                 tracker.update(len(prompts))
+                pbar.update(len(prompts))
                 continue
 
             tracker.update(skipped)
-            logger.info(
-                "Seed %d [%s]: evaluating %d images (%d skipped)",
-                seed,
-                category,
-                len(todo),
-                skipped,
-            )
+            pbar.update(skipped)
+            pbar.set_postfix(category=category, seed=seed)
 
             records: list[dict[str, Any]] = []
             for prompt in todo:
@@ -266,6 +266,7 @@ def run_evaluation(config: EvalConfig) -> None:
                 if not img_path.exists():
                     logger.warning("Image not found: %s", img_path)
                     tracker.update(1)
+                    pbar.update(1)
                     continue
 
                 img = Image.open(img_path).convert("RGB")
@@ -278,10 +279,12 @@ def run_evaluation(config: EvalConfig) -> None:
 
                 records.append(rec)
                 tracker.update(1)
+                pbar.update(1)
 
             if records:
                 append_metadata_jsonl(responses_path, records)
 
             logger.info("Seed %d [%s] done | %s", seed, category, tracker.summary_line())
 
+    pbar.close()
     logger.info("Evaluation complete | %s", tracker.summary_line())

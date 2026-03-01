@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: vlm-eval
+  name: vlm-eval-sdxl-50
 spec:
   backoffLimit: 3
   template:
@@ -17,46 +17,37 @@ spec:
       - name: evaluator
         image: ghcr.io/kkuntal990/seed-mining:latest
         imagePullPolicy: Always
-        command: ["/bin/bash"]
+        command: ["python", "-c"]
         args:
-        - "-c"
         - |
-          echo "========================================="
-          echo "VLM Evaluation — Seed Mining"
-          echo "VLM: ${VLM_MODEL_ID}"
-          echo "Seeds: ${SEED_START}..$(( SEED_START + SEED_RANGE - 1 ))"
-          echo "Num objects: ${NUM_OBJECTS}, Num settings: ${NUM_SETTINGS}"
-          echo "========================================="
-          echo ""
+          import sys
+          sys.argv = [sys.argv[0]]
 
-          # GPU verification
-          echo "GPU Status:"
-          nvidia-smi
-          echo ""
+          from vlm_eval.evaluator import load_vlm, run_evaluation
+          from vlm_eval.eval_config import EvalConfig
 
-          # Start evaluation
-          echo "Starting VLM evaluation..."
-          echo ""
-          cd /app/vlm-eval && uv run python scripts/run_evaluation.py \
-            --vlm_model_id "${VLM_MODEL_ID}" \
-            --quantize "${QUANTIZE}" \
-            --images_dir "${IMAGES_DIR}" \
-            --prompt_dataset_dir "${PROMPT_DATASET_DIR}" \
-            --eval_out_dir "${EVAL_OUT_DIR}" \
-            --seed_start "${SEED_START}" \
-            --seed_range "${SEED_RANGE}" \
-            --num_objects "${NUM_OBJECTS}" \
-            --num_settings "${NUM_SETTINGS}" \
-            --image_format "${IMAGE_FORMAT}" \
-            --category "${CATEGORY}"
+          config = EvalConfig(
+              _cli_parse_args=False,
+              vlm_model_id="Qwen/Qwen2.5-VL-7B-Instruct",
+              quantize="4bit",
+              images_dir="/output/golden-noise-project/output",
+              prompt_dataset_dir="/app/seed-mining/prompt_dataset",
+              eval_out_dir="/output/sdxl",
+              seed_start=0,
+              seed_range=50,
+              num_objects=15,
+              num_settings=4,
+              category="all",
+          )
+          run_evaluation(config)
 
         resources:
           requests:
-            nvidia.com/gpu: "1"
+            nvidia.com/rtxa6000: "1"
             memory: "32Gi"
             cpu: "4"
           limits:
-            nvidia.com/gpu: "1"
+            nvidia.com/rtxa6000: "1"
             memory: "48Gi"
             cpu: "8"
 
@@ -69,49 +60,16 @@ spec:
           mountPath: /dev/shm
 
         env:
-        # HuggingFace token
         - name: HF_TOKEN
           valueFrom:
             secretKeyRef:
               name: hf-token
               key: token
               optional: true
-
-        # Cache directories
         - name: HF_HOME
           value: "/cache/hf"
         - name: TRANSFORMERS_CACHE
           value: "/cache/hf/transformers"
-
-        # VLM configuration
-        - name: VLM_MODEL_ID
-          value: "Qwen/Qwen2.5-VL-7B-Instruct"
-        - name: QUANTIZE
-          value: "4bit"
-
-        # Prompt dataset (baked into container)
-        - name: PROMPT_DATASET_DIR
-          value: "/app/seed-mining/prompt_dataset"
-
-        # Input/output
-        - name: IMAGES_DIR
-          value: "/output/image_gen"
-        - name: EVAL_OUT_DIR
-          value: "/output/eval_results"
-        - name: SEED_START
-          value: "0"
-        - name: SEED_RANGE
-          value: "2"
-        - name: NUM_OBJECTS
-          value: "1"
-        - name: NUM_SETTINGS
-          value: "1"
-        - name: IMAGE_FORMAT
-          value: "jpg"
-        - name: CATEGORY
-          value: "numeracy"
-
-        # Python settings
         - name: PYTHONUNBUFFERED
           value: "1"
         - name: PYTORCH_CUDA_ALLOC_CONF
@@ -128,16 +86,9 @@ spec:
       - key: nautilus.io/reservation
         operator: Exists
         effect: NoSchedule
-
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
-              - key: nvidia.com/gpu.product
-                operator: In
-                values:
-                - NVIDIA-A100-SXM4-80GB
+      - key: nautilus.io/issue
+        operator: Exists
+        effect: NoSchedule
 
       volumes:
       - name: cache-volume
