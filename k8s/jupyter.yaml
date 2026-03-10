@@ -1,14 +1,14 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: ece271b-jupyter
+  name: ece271b-jupyter-3
   labels:
     app: ece271b
     task: jupyter
 spec:
   restartPolicy: Never
   containers:
-  - name: jupyter-container
+  - name: jupyter-container-3
     image: ghcr.io/kkuntal990/seed-mining:latest
     imagePullPolicy: Always
     command: ["/bin/bash", "-c"]

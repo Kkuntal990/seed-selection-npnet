@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "additionalDirectories": [
+      "/tmp",
+      "/private/tmp"
+    ],
+    "allow": [
+      "Bash(kubectl get pod ece271b-jupyter -o jsonpath='{.status.phase}')"
+    ]
+  }
+}
