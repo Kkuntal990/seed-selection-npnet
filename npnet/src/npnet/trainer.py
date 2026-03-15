@@ -156,7 +156,7 @@ def run_training(config: TrainingConfig) -> None:
     # Accelerator handles device placement, DDP, mixed precision
     from accelerate import DistributedDataParallelKwargs
 
-    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(
         gradient_accumulation_steps=config.grad_accumulation_steps,
         kwargs_handlers=[ddp_kwargs],
