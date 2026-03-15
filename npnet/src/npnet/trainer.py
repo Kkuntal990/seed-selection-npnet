@@ -257,6 +257,8 @@ def run_training(config: TrainingConfig) -> None:
         train_steps = 0
 
         for step, (source_noise, target, prompt_embeds) in enumerate(train_loader, 1):
+            if step == 1 and epoch == 1:
+                print(f"[rank {accelerator.process_index}] First batch: source={source_noise.shape} target={target.shape} embeds={prompt_embeds.shape}", flush=True)
             with accelerator.accumulate(npnet):
                 prompt_embeds = prompt_embeds.to(device)
                 golden_noise = npnet(source_noise, prompt_embeds)
@@ -270,6 +272,8 @@ def run_training(config: TrainingConfig) -> None:
             global_step += 1
             train_loss_sum += loss.item()
             train_steps += 1
+            if step == 1 and epoch == 1:
+                print(f"[rank {accelerator.process_index}] Step 1 done, loss={loss.item():.4f}", flush=True)
 
             if is_main and (step % log_every == 0 or step == 1):
                 avg_so_far = train_loss_sum / train_steps
