@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from tqdm import tqdm
 
 logger = logging.getLogger("npnet.nearest_good")
 
@@ -274,6 +275,13 @@ def build_pairs_for_prompt(
 
 def run_build_pairs(config: NearestGoodConfig) -> None:
     """Build nearest-good transport pairs for all categories."""
+    # Set up logging so output is visible
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
     rng = torch.Generator().manual_seed(config.seed)
 
     # Save run config
@@ -376,7 +384,7 @@ def run_build_pairs(config: NearestGoodConfig) -> None:
         ]:
             manifest_records: list[dict[str, Any]] = []
 
-            for pid in pids:
+            for pid in tqdm(pids, desc=f"{category}/{split_name}", unit="prompt"):
                 triplets = build_pairs_for_prompt(
                     prompt_id=pid,
                     category=category,
