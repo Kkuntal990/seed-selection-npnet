@@ -30,20 +30,20 @@ def generate() -> None:
     run_golden_generation(config)
 
 
-def build_nearest_good() -> None:
-    """Build nearest-good seed transport training pairs from VLM rankings."""
-    from npnet.config import NearestGoodBuildConfig
-    from npnet.nearest_good import NearestGoodConfig, run_build_pairs
+def build_delta_noise() -> None:
+    """Build delta-noise training pairs from VLM rankings."""
+    from npnet.config import DeltaNoiseBuildConfig
+    from npnet.delta_noise import DeltaNoiseConfig, run_build_delta_pairs
 
-    cli_cfg = NearestGoodBuildConfig()  # type: ignore[call-arg]
-    config = NearestGoodConfig(
+    cli_cfg = DeltaNoiseBuildConfig()  # type: ignore[call-arg]
+    config = DeltaNoiseConfig(
         ranking_dir=cli_cfg.ranking_dir,
         out_dir=cli_cfg.out_dir,
         categories=cli_cfg.categories,
         min_accuracy=cli_cfg.min_accuracy,
         max_accuracy=cli_cfg.max_accuracy,
-        top_k_golden=cli_cfg.top_k_golden,
-        num_source_seeds=cli_cfg.num_source_seeds,
+        num_good_seeds=cli_cfg.num_good_seeds,
+        num_bad_seeds=cli_cfg.num_bad_seeds,
         latent_shape=(
             cli_cfg.latent_channels,
             cli_cfg.latent_resolution,
@@ -53,7 +53,7 @@ def build_nearest_good() -> None:
         val_frac=cli_cfg.val_frac,
         seed=cli_cfg.seed,
     )
-    run_build_pairs(config)
+    run_build_delta_pairs(config)
 
 
 def benchmark() -> None:
@@ -65,10 +65,10 @@ def benchmark() -> None:
     run_benchmark(config)
 
 
-def analyze_nearest_good() -> None:
-    """Analyze nearest-good dataset statistics."""
-    from npnet.config import DiagnosticsConfig
-    from npnet.diagnostics import run_diagnostics
+def analyze_delta() -> None:
+    """Analyze delta-noise dataset statistics."""
+    from npnet.config import DeltaDiagnosticsConfig
+    from npnet.delta_diagnostics import run_diagnostics
 
-    config = DiagnosticsConfig()  # type: ignore[call-arg]
+    config = DeltaDiagnosticsConfig()  # type: ignore[call-arg]
     run_diagnostics(config)

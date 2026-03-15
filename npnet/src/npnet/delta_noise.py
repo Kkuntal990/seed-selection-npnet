@@ -1,4 +1,9 @@
-"""Build nearest-good seed transport pairs from VLM ranking data."""
+"""Build delta-noise training pairs from VLM ranking data.
+
+For each prompt, identifies top-K good seeds and bottom-K bad seeds based on
+VLM correctness scores, then constructs (source_noise, delta) pairs where
+delta = z_good - z_bad.  NPNet learns to predict this correction vector.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +17,7 @@ from typing import Any
 import torch
 from tqdm import tqdm
 
-logger = logging.getLogger("npnet.nearest_good")
+logger = logging.getLogger("npnet.delta_noise")
 
 
 # ---------------------------------------------------------------------------
@@ -21,28 +26,28 @@ logger = logging.getLogger("npnet.nearest_good")
 
 
 @dataclass(frozen=True)
-class NearestGoodPair:
-    """One source -> target noise transport pair."""
+class DeltaNoisePair:
+    """One (bad_seed, good_seed) delta-noise pair."""
 
-    source_seed: int
-    target_seed: int
+    bad_seed: int
+    good_seed: int
     prompt_id: int
     category: str
     prompt_text: str
-    l2_distance: float
+    delta_norm: float
 
 
 @dataclass
-class NearestGoodConfig:
-    """Configuration for building nearest-good seed transport pairs."""
+class DeltaNoiseConfig:
+    """Configuration for building delta-noise training pairs."""
 
     ranking_dir: Path
     out_dir: Path
     categories: list[str] = field(default_factory=lambda: ["numeracy", "spatial"])
     min_accuracy: float = 0.10
     max_accuracy: float = 0.90
-    top_k_golden: int = 5
-    num_source_seeds: int = 20
+    num_good_seeds: int = 3
+    num_bad_seeds: int = 3
     latent_shape: tuple[int, ...] = (4, 128, 128)
     train_frac: float = 0.8
     val_frac: float = 0.1
@@ -74,7 +79,7 @@ def load_seed_prompt_matrix(csv_path: Path) -> dict[int, dict[int, bool]]:
         prompt_ids = [int(col[1:]) for col in header[1:]]  # strip 'p' prefix
         for row in reader:
             seed = int(row[0])
-            matrix[seed] = {pid: val == "1" for pid, val in zip(prompt_ids, row[1:])}
+            matrix[seed] = {pid: val == "1" for pid, val in zip(prompt_ids, row[1:], strict=False)}
     return matrix
 
 
@@ -108,13 +113,11 @@ def filter_prompts_by_difficulty(
 ) -> list[int]:
     """Return prompt_ids with accuracy in [min_accuracy, max_accuracy]."""
     return sorted(
-        pid
-        for pid, acc in prompt_accuracies.items()
-        if min_accuracy <= acc <= max_accuracy
+        pid for pid, acc in prompt_accuracies.items() if min_accuracy <= acc <= max_accuracy
     )
 
 
-def get_golden_seeds_for_prompt(
+def get_good_seeds_for_prompt(
     matrix: dict[int, dict[int, bool]],
     prompt_id: int,
     top_k: int,
@@ -122,32 +125,32 @@ def get_golden_seeds_for_prompt(
 ) -> list[int]:
     """Return top-K seeds that are correct for *prompt_id*.
 
-    Correct seeds are ranked by overall accuracy (tiebreaker), then truncated
-    to *top_k*.  Returns empty list if no seed is correct for this prompt.
+    Correct seeds are ranked by overall accuracy descending, then seed
+    ascending for stability.
     """
-    correct_seeds = [
-        seed for seed, pmap in matrix.items() if pmap.get(prompt_id, False)
-    ]
+    correct_seeds = [seed for seed, pmap in matrix.items() if pmap.get(prompt_id, False)]
     if not correct_seeds:
         return []
-    # Sort by overall accuracy descending, then seed ascending for stability
     correct_seeds.sort(key=lambda s: (-seed_overall_acc.get(s, 0.0), s))
     return correct_seeds[:top_k]
 
 
-def sample_source_seeds(
-    non_golden_seeds: list[int],
-    n: int = 20,
-    rng: torch.Generator | None = None,
+def get_bad_seeds_for_prompt(
+    matrix: dict[int, dict[int, bool]],
+    prompt_id: int,
+    bottom_k: int,
+    seed_overall_acc: dict[int, float],
 ) -> list[int]:
-    """Randomly sample *n* source seeds from the non-golden pool.
+    """Return bottom-K seeds that are incorrect for *prompt_id*.
 
-    If the pool is smaller than *n*, return all of them.
+    Incorrect seeds are ranked by overall accuracy ascending (worst first),
+    then seed ascending for stability.
     """
-    if len(non_golden_seeds) <= n:
-        return list(non_golden_seeds)
-    indices = torch.randperm(len(non_golden_seeds), generator=rng)[: n].tolist()
-    return [non_golden_seeds[i] for i in sorted(indices)]
+    incorrect_seeds = [seed for seed, pmap in matrix.items() if not pmap.get(prompt_id, False)]
+    if not incorrect_seeds:
+        return []
+    incorrect_seeds.sort(key=lambda s: (seed_overall_acc.get(s, 0.0), s))
+    return incorrect_seeds[:bottom_k]
 
 
 # ---------------------------------------------------------------------------
@@ -158,35 +161,12 @@ def sample_source_seeds(
 def generate_latent(seed: int, shape: tuple[int, ...] = (4, 128, 128)) -> torch.Tensor:
     """Generate deterministic latent noise with CPU generator.
 
-    Matches ``inference.py:81-88``: generates in float16 with a CPU generator,
-    then upcasts to float32 for training (``trainer.py:109`` calls ``.float()``).
+    Matches ``inference.py``: generates in float16 with a CPU generator,
+    then upcasts to float32 for training.
     """
     generator = torch.Generator(device="cpu").manual_seed(seed)
     latent = torch.randn(1, *shape, generator=generator, dtype=torch.float16)
     return latent.squeeze(0).float()
-
-
-# ---------------------------------------------------------------------------
-# Nearest-golden search
-# ---------------------------------------------------------------------------
-
-
-def find_nearest_golden(
-    source_latent: torch.Tensor,
-    golden_latents: dict[int, torch.Tensor],
-) -> tuple[int, float]:
-    """Find golden seed whose latent is nearest to *source_latent* in L2.
-
-    Returns ``(golden_seed, l2_distance)``.
-    """
-    best_seed = -1
-    best_dist = float("inf")
-    for seed, golden in golden_latents.items():
-        dist = torch.norm(source_latent.float() - golden.float(), p=2).item()
-        if dist < best_dist:
-            best_seed = seed
-            best_dist = dist
-    return best_seed, best_dist
 
 
 # ---------------------------------------------------------------------------
@@ -221,50 +201,55 @@ def split_prompts_deterministic(
 # ---------------------------------------------------------------------------
 
 
-def build_pairs_for_prompt(
+def build_delta_pairs_for_prompt(
     prompt_id: int,
     category: str,
     prompt_text: str,
     matrix: dict[int, dict[int, bool]],
     seed_overall_acc: dict[int, float],
-    all_seeds: list[int],
-    top_k_golden: int = 5,
-    num_source_seeds: int = 20,
+    num_good_seeds: int = 3,
+    num_bad_seeds: int = 3,
     latent_shape: tuple[int, ...] = (4, 128, 128),
-    rng: torch.Generator | None = None,
-) -> list[tuple[NearestGoodPair, torch.Tensor, torch.Tensor]]:
-    """Build all nearest-good pairs for one prompt.
+) -> list[tuple[DeltaNoisePair, torch.Tensor, torch.Tensor]]:
+    """Build all (bad, good) delta pairs for one prompt.
 
-    Returns list of ``(pair, source_latent, target_latent)`` to avoid
-    regenerating latents in the caller.
+    Creates ``num_good_seeds * num_bad_seeds`` pairs per prompt (all
+    combinations).  Returns list of ``(pair, source_noise, delta_noise)``.
     """
-    golden_seeds = get_golden_seeds_for_prompt(
-        matrix, prompt_id, top_k_golden, seed_overall_acc
-    )
-    if not golden_seeds:
-        logger.warning("[%s] prompt %d has no correct seeds, skipping", category, prompt_id)
+    good_seeds = get_good_seeds_for_prompt(matrix, prompt_id, num_good_seeds, seed_overall_acc)
+    bad_seeds = get_bad_seeds_for_prompt(matrix, prompt_id, num_bad_seeds, seed_overall_acc)
+
+    if not good_seeds or not bad_seeds:
+        logger.warning(
+            "[%s] prompt %d has insufficient good/bad seeds (good=%d, bad=%d), skipping",
+            category,
+            prompt_id,
+            len(good_seeds),
+            len(bad_seeds),
+        )
         return []
 
-    golden_set = set(golden_seeds)
-    non_golden = [s for s in all_seeds if s not in golden_set]
-    source_seeds = sample_source_seeds(non_golden, num_source_seeds, rng)
+    # Pre-generate latents
+    good_latents = {s: generate_latent(s, latent_shape) for s in good_seeds}
+    bad_latents = {s: generate_latent(s, latent_shape) for s in bad_seeds}
 
-    # Pre-generate golden latents
-    golden_latents = {s: generate_latent(s, latent_shape) for s in golden_seeds}
+    results: list[tuple[DeltaNoisePair, torch.Tensor, torch.Tensor]] = []
+    for bad_seed in bad_seeds:
+        for good_seed in good_seeds:
+            bad_latent = bad_latents[bad_seed]
+            good_latent = good_latents[good_seed]
+            delta = good_latent - bad_latent
+            delta_norm = torch.norm(delta, p=2).item()
 
-    results: list[tuple[NearestGoodPair, torch.Tensor, torch.Tensor]] = []
-    for src_seed in source_seeds:
-        src_latent = generate_latent(src_seed, latent_shape)
-        tgt_seed, l2_dist = find_nearest_golden(src_latent, golden_latents)
-        pair = NearestGoodPair(
-            source_seed=src_seed,
-            target_seed=tgt_seed,
-            prompt_id=prompt_id,
-            category=category,
-            prompt_text=prompt_text,
-            l2_distance=l2_dist,
-        )
-        results.append((pair, src_latent, golden_latents[tgt_seed]))
+            pair = DeltaNoisePair(
+                bad_seed=bad_seed,
+                good_seed=good_seed,
+                prompt_id=prompt_id,
+                category=category,
+                prompt_text=prompt_text,
+                delta_norm=delta_norm,
+            )
+            results.append((pair, bad_latent, delta))
     return results
 
 
@@ -273,16 +258,13 @@ def build_pairs_for_prompt(
 # ---------------------------------------------------------------------------
 
 
-def run_build_pairs(config: NearestGoodConfig) -> None:
-    """Build nearest-good transport pairs for all categories."""
-    # Set up logging so output is visible
+def run_build_delta_pairs(config: DeltaNoiseConfig) -> None:
+    """Build delta-noise training pairs for all categories."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s: %(message)s",
         datefmt="%H:%M:%S",
     )
-
-    rng = torch.Generator().manual_seed(config.seed)
 
     # Save run config
     config.out_dir.mkdir(parents=True, exist_ok=True)
@@ -294,8 +276,8 @@ def run_build_pairs(config: NearestGoodConfig) -> None:
                 "categories": config.categories,
                 "min_accuracy": config.min_accuracy,
                 "max_accuracy": config.max_accuracy,
-                "top_k_golden": config.top_k_golden,
-                "num_source_seeds": config.num_source_seeds,
+                "num_good_seeds": config.num_good_seeds,
+                "num_bad_seeds": config.num_bad_seeds,
                 "latent_shape": list(config.latent_shape),
                 "train_frac": config.train_frac,
                 "val_frac": config.val_frac,
@@ -325,11 +307,8 @@ def run_build_pairs(config: NearestGoodConfig) -> None:
         prompt_acc = load_prompt_accuracy(cat_dir / "prompt_accuracy.json")
         prompt_texts = load_prompt_texts(cat_dir / "prompt_accuracy.json")
         seed_overall_acc = load_seed_overall_accuracy(cat_dir / "ranked_seeds.json")
-        all_seeds = sorted(matrix.keys())
 
-        logger.info(
-            "[%s] Loaded %d seeds, %d prompts", category, len(all_seeds), len(prompt_acc)
-        )
+        logger.info("[%s] Loaded %d seeds, %d prompts", category, len(matrix), len(prompt_acc))
 
         # 2. Filter prompts by difficulty
         filtered_pids = filter_prompts_by_difficulty(
@@ -385,37 +364,35 @@ def run_build_pairs(config: NearestGoodConfig) -> None:
             manifest_records: list[dict[str, Any]] = []
 
             for pid in tqdm(pids, desc=f"{category}/{split_name}", unit="prompt"):
-                triplets = build_pairs_for_prompt(
+                triplets = build_delta_pairs_for_prompt(
                     prompt_id=pid,
                     category=category,
                     prompt_text=prompt_texts.get(pid, ""),
                     matrix=matrix,
                     seed_overall_acc=seed_overall_acc,
-                    all_seeds=all_seeds,
-                    top_k_golden=config.top_k_golden,
-                    num_source_seeds=config.num_source_seeds,
+                    num_good_seeds=config.num_good_seeds,
+                    num_bad_seeds=config.num_bad_seeds,
                     latent_shape=config.latent_shape,
-                    rng=rng,
                 )
 
-                for pair, src_latent, tgt_latent in triplets:
+                for pair, source_noise, delta_noise in triplets:
                     rel_path = (
                         f"{category}/prompt_{pid:04d}"
-                        f"/src={pair.source_seed:03d}_tgt={pair.target_seed:03d}.pt"
+                        f"/bad={pair.bad_seed:03d}_good={pair.good_seed:03d}.pt"
                     )
                     pt_path = config.out_dir / split_name / rel_path
                     pt_path.parent.mkdir(parents=True, exist_ok=True)
 
                     torch.save(
                         {
-                            "source_noise": src_latent,
-                            "target_noise": tgt_latent,
+                            "source_noise": source_noise,
+                            "delta_noise": delta_noise,
                             "prompt_text": pair.prompt_text,
-                            "source_seed": pair.source_seed,
-                            "target_seed": pair.target_seed,
+                            "bad_seed": pair.bad_seed,
+                            "good_seed": pair.good_seed,
                             "prompt_id": pair.prompt_id,
                             "category": pair.category,
-                            "l2_distance": pair.l2_distance,
+                            "delta_norm": pair.delta_norm,
                         },
                         pt_path,
                     )
@@ -423,16 +400,16 @@ def run_build_pairs(config: NearestGoodConfig) -> None:
                     manifest_records.append(
                         {
                             "path": rel_path,
-                            "source_seed": pair.source_seed,
-                            "target_seed": pair.target_seed,
+                            "bad_seed": pair.bad_seed,
+                            "good_seed": pair.good_seed,
                             "prompt_id": pair.prompt_id,
                             "category": pair.category,
                             "prompt_text": pair.prompt_text,
-                            "l2_distance": pair.l2_distance,
+                            "delta_norm": pair.delta_norm,
                         }
                     )
 
-            # Write manifest (overwrite to avoid duplicates on re-run)
+            # Write manifest
             manifest_path = config.out_dir / split_name / "manifest.jsonl"
             manifest_path.parent.mkdir(parents=True, exist_ok=True)
             with manifest_path.open("a") as f:
@@ -440,8 +417,6 @@ def run_build_pairs(config: NearestGoodConfig) -> None:
                     f.write(json.dumps(rec, sort_keys=True) + "\n")
 
             total_pairs += len(manifest_records)
-            logger.info(
-                "[%s/%s] Wrote %d pairs", category, split_name, len(manifest_records)
-            )
+            logger.info("[%s/%s] Wrote %d pairs", category, split_name, len(manifest_records))
 
     logger.info("Done. Total pairs: %d", total_pairs)

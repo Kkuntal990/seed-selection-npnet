@@ -117,7 +117,11 @@ def run_golden_generation(config: InferenceConfig) -> None:
                         prompt=prompt.text,
                         device=device,
                     )
-                    golden_latent = npnet(latent, prompt_embeds).half()
+                    npnet_output = npnet(latent, prompt_embeds)
+                    if config.inference_mode == "delta":
+                        golden_latent = (latent.float() + npnet_output).half()
+                    else:
+                        golden_latent = npnet_output.half()
 
                 # Generate image with golden noise
                 image = pipe(

@@ -84,10 +84,10 @@ class TrainingConfig(BaseSettings):
         default=None, description="JSONL file mapping prompt_id to text (required for ddim)"
     )
     dataset_type: str = Field(
-        default="ddim", description="Dataset type: 'ddim' (original .npz) or 'nearest_good' (.pt)"
+        default="ddim", description="Dataset type: 'ddim' (original .npz) or 'delta_noise' (.pt)"
     )
-    nearest_good_dir: Path | None = Field(
-        default=None, description="Nearest-good dataset dir (required for nearest_good)"
+    delta_noise_dir: Path | None = Field(
+        default=None, description="Delta-noise dataset dir (required for delta_noise)"
     )
 
     # --- Architecture ---
@@ -117,21 +117,19 @@ class TrainingConfig(BaseSettings):
     enable_cpu_offload: bool = True
 
     @model_validator(mode="after")
-    def _check_dataset_fields(self) -> "TrainingConfig":
+    def _check_dataset_fields(self) -> TrainingConfig:
         if self.dataset_type == "ddim":
             if self.noise_pairs_dir is None or self.prompt_manifest_path is None:
                 raise ValueError(
                     "--noise_pairs_dir and --prompt_manifest_path are required "
                     "when --dataset_type=ddim"
                 )
-        elif self.dataset_type == "nearest_good":
-            if self.nearest_good_dir is None:
-                raise ValueError(
-                    "--nearest_good_dir is required when --dataset_type=nearest_good"
-                )
+        elif self.dataset_type == "delta_noise":
+            if self.delta_noise_dir is None:
+                raise ValueError("--delta_noise_dir is required when --dataset_type=delta_noise")
         else:
             raise ValueError(
-                f"dataset_type must be 'ddim' or 'nearest_good', got '{self.dataset_type}'"
+                f"dataset_type must be 'ddim' or 'delta_noise', got '{self.dataset_type}'"
             )
         return self
 
@@ -179,6 +177,12 @@ class InferenceConfig(BaseSettings):
     batch_size: int = 4
     generator_device: str = "cpu"
 
+    # --- Inference mode ---
+    inference_mode: str = Field(
+        default="delta",
+        description="'delta' applies z + NPNet(z), 'replacement' uses NPNet(z) directly",
+    )
+
     # --- Output ---
     out_dir: Path = Field(default=Path("golden_output"), description="Output directory for images")
     image_format: str = "jpg"
@@ -186,6 +190,13 @@ class InferenceConfig(BaseSettings):
     # --- Runtime ---
     enable_cpu_offload: bool = False
     dry_run: bool = False
+
+    @field_validator("inference_mode")
+    @classmethod
+    def validate_inference_mode(cls, v: str) -> str:
+        if v not in ("delta", "replacement"):
+            raise ValueError(f"inference_mode must be 'delta' or 'replacement', got '{v}'")
+        return v
 
     @field_validator("image_format")
     @classmethod
@@ -214,21 +225,21 @@ class InferenceConfig(BaseSettings):
         )
 
 
-class NearestGoodBuildConfig(BaseSettings):
-    """Configuration for building nearest-good seed transport pairs."""
+class DeltaNoiseBuildConfig(BaseSettings):
+    """Configuration for building delta-noise training pairs."""
 
-    model_config = {"env_prefix": "NPNG_", "cli_parse_args": True}
+    model_config = {"env_prefix": "NPDN_", "cli_parse_args": True}
 
     ranking_dir: Path = Field(description="VLM ranking output directory")
     out_dir: Path = Field(
-        default=Path("data/nearest_good"),
+        default=Path("data/delta_noise"),
         description="Output directory for .pt pair files",
     )
     categories: list[str] = Field(default=["numeracy", "spatial"])
     min_accuracy: float = 0.10
     max_accuracy: float = 0.90
-    top_k_golden: int = 5
-    num_source_seeds: int = 20
+    num_good_seeds: int = 3
+    num_bad_seeds: int = 3
     latent_channels: int = 4
     latent_resolution: int = 128
     train_frac: float = 0.8
@@ -251,12 +262,12 @@ class NearestGoodBuildConfig(BaseSettings):
         )
 
 
-class DiagnosticsConfig(BaseSettings):
-    """Configuration for nearest-good dataset analysis."""
+class DeltaDiagnosticsConfig(BaseSettings):
+    """Configuration for delta-noise dataset analysis."""
 
     model_config = {"env_prefix": "NPDIAG_", "cli_parse_args": True}
 
-    dataset_dir: Path = Field(description="Nearest-good dataset directory")
+    dataset_dir: Path = Field(description="Delta-noise dataset directory")
     output_dir: Path = Field(
         default=Path("diagnostics_output"),
         description="Output directory for reports",
@@ -312,6 +323,12 @@ class BenchmarkConfig(BaseSettings):
     vlm_model_id: str = "Qwen/Qwen2.5-VL-7B-Instruct"
     quantize: str | None = "4bit"
 
+    # --- Inference mode ---
+    inference_mode: str = Field(
+        default="delta",
+        description="'delta' applies z + NPNet(z), 'replacement' uses NPNet(z) directly",
+    )
+
     # --- Baseline comparison ---
     baseline_images_dir: Path | None = Field(
         default=None,
@@ -319,9 +336,7 @@ class BenchmarkConfig(BaseSettings):
     )
 
     # --- Output ---
-    out_dir: Path = Field(
-        default=Path("benchmark_output"), description="Output directory"
-    )
+    out_dir: Path = Field(default=Path("benchmark_output"), description="Output directory")
 
     # --- Phase control ---
     skip_generation: bool = False
@@ -331,6 +346,13 @@ class BenchmarkConfig(BaseSettings):
     # --- Runtime ---
     enable_cpu_offload: bool = False
     dry_run: bool = False
+
+    @field_validator("inference_mode")
+    @classmethod
+    def validate_inference_mode(cls, v: str) -> str:
+        if v not in ("delta", "replacement"):
+            raise ValueError(f"inference_mode must be 'delta' or 'replacement', got '{v}'")
+        return v
 
     @property
     def seeds(self) -> list[int]:

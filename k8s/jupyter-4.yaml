@@ -1,0 +1,116 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ece271b-jupyter-4
+  labels:
+    app: ece271b
+    task: jupyter
+spec:
+  restartPolicy: Never
+  containers:
+  - name: jupyter-container-4
+    image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
+    imagePullPolicy: IfNotPresent
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        apt-get update && apt-get install -y git
+
+        # Clone or pull latest
+        if [ -d /workspace/ece271b-project/.git ]; then
+          cd /workspace/ece271b-project && git pull
+        else
+          git clone https://github.com/Kkuntal990/seed-selection-npnet.git /workspace/ece271b-project
+        fi
+
+        # Install all project packages + pin compatible versions
+        cd /workspace/ece271b-project
+        pip install --root-user-action=ignore --no-cache-dir \
+          jupyterlab \
+          -e ./seed-mining -e ./vlm-eval -e ./npnet
+        pip install --root-user-action=ignore \
+          "diffusers==0.30.3" "transformers==4.45.0" "timm>=1.0"
+
+        echo "=== All packages installed ==="
+        python3 -c "from npnet.cli import train; from diffusers import StableDiffusionXLPipeline; print('OK: imports verified')"
+
+        jupyter lab --ip=0.0.0.0 --no-browser --allow-root \
+          --ServerApp.root_dir=/ \
+          --IdentityProvider.token=selfimprove
+
+    resources:
+      limits:
+        nvidia.com/a100: "2"
+        memory: "32Gi"
+        cpu: "4"
+      requests:
+        nvidia.com/a100: "2"
+        memory: "32Gi"
+        cpu: "4"
+
+    volumeMounts:
+      - name: cache-volume
+        mountPath: /cache
+      - name: output
+        mountPath: /output
+      - name: dev-shm
+        mountPath: /dev/shm
+
+    env:
+    - name: HF_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: hf-token
+          key: token
+          optional: true
+    - name: HF_HOME
+      value: "/cache/hf"
+    - name: TRANSFORMERS_CACHE
+      value: "/cache/hf/transformers"
+    - name: TORCH_HOME
+      value: "/cache/torch"
+    - name: PIP_CACHE_DIR
+      value: "/cache/pip"
+    - name: PYTHONUNBUFFERED
+      value: "1"
+    - name: PYTORCH_CUDA_ALLOC_CONF
+      value: "expandable_segments:True"
+
+  tolerations:
+    - effect: NoSchedule
+      key: nautilus.io/hardware
+      operator: Equal
+      value: large-gpu
+    - effect: PreferNoSchedule
+      key: nvidia.com/gpu
+      operator: Exists
+    - key: nautilus.io/reservation
+      operator: Exists
+      effect: NoSchedule
+    - key: nautilus.io/issue
+      operator: Exists
+      effect: NoSchedule
+
+  affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu.product
+                operator: In
+                values:
+                - NVIDIA-A100-SXM4-80GB
+
+  volumes:
+    - name: output
+      persistentVolumeClaim:
+        claimName: seed-mining-output
+    - name: cache-volume
+      emptyDir:
+        sizeLimit: 100Gi
+    - name: dev-shm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 16Gi

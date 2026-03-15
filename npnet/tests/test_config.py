@@ -7,7 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from npnet.config import DataCollectionConfig, InferenceConfig, TrainingConfig
+from npnet.config import (
+    DataCollectionConfig,
+    DeltaNoiseBuildConfig,
+    InferenceConfig,
+    TrainingConfig,
+)
 
 
 class TestDataCollectionConfig:
@@ -37,7 +42,7 @@ class TestDataCollectionConfig:
 
 
 class TestTrainingConfig:
-    def test_from_cli(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_from_cli_ddim(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             sys,
             "argv",
@@ -52,10 +57,36 @@ class TestTrainingConfig:
         config = TrainingConfig()
         assert config.noise_pairs_dir == Path("/tmp/pairs")
         assert config.prompt_manifest_path == Path("/tmp/manifest.jsonl")
+        assert config.dataset_type == "ddim"
         assert config.epochs == 30
         assert config.batch_size == 64
         assert config.lr == 1e-4
         assert config.val_split == 0.1
+
+    def test_from_cli_delta_noise(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "prog",
+                "--dataset_type",
+                "delta_noise",
+                "--delta_noise_dir",
+                "/tmp/delta",
+            ],
+        )
+        config = TrainingConfig()
+        assert config.dataset_type == "delta_noise"
+        assert config.delta_noise_dir == Path("/tmp/delta")
+
+    def test_invalid_dataset_type(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["prog", "--dataset_type", "nearest_good"],
+        )
+        with pytest.raises(Exception):  # noqa: B017
+            TrainingConfig()
 
     def test_architecture_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
@@ -114,3 +145,43 @@ class TestInferenceConfig:
         )
         config = InferenceConfig()
         assert config.seeds == [10, 11, 12, 13, 14]
+
+    def test_inference_mode_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(sys, "argv", ["prog", "--npnet_checkpoint", "/tmp/x.pth"])
+        config = InferenceConfig()
+        assert config.inference_mode == "delta"
+
+    def test_inference_mode_replacement(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["prog", "--npnet_checkpoint", "/tmp/x.pth", "--inference_mode", "replacement"],
+        )
+        config = InferenceConfig()
+        assert config.inference_mode == "replacement"
+
+    def test_inference_mode_invalid(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["prog", "--npnet_checkpoint", "/tmp/x.pth", "--inference_mode", "bad"],
+        )
+        with pytest.raises(Exception):  # noqa: B017
+            InferenceConfig()
+
+
+class TestDeltaNoiseBuildConfig:
+    def test_from_cli(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["prog", "--ranking_dir", "/tmp/ranking"],
+        )
+        config = DeltaNoiseBuildConfig()
+        assert config.ranking_dir == Path("/tmp/ranking")
+        assert config.num_good_seeds == 3
+        assert config.num_bad_seeds == 3
+        assert config.min_accuracy == 0.10
+        assert config.max_accuracy == 0.90
+        assert config.train_frac == 0.8
+        assert config.val_frac == 0.1
