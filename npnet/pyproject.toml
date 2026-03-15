@@ -5,6 +5,7 @@ description = "NPNet golden noise training for ECE 271B"
 requires-python = ">=3.11"
 dependencies = [
     "seed-mining",
+    "vlm-eval",
     "torch>=2.1",
     "diffusers>=0.30",
     "transformers>=4.36",
@@ -33,6 +34,9 @@ dev = [
 npnet-collect = "npnet.cli:collect"
 npnet-train = "npnet.cli:train"
 npnet-generate = "npnet.cli:generate"
+npnet-build-pairs = "npnet.cli:build_nearest_good"
+npnet-benchmark = "npnet.cli:benchmark"
+npnet-analyze = "npnet.cli:analyze_nearest_good"
 
 [build-system]
 requires = ["hatchling"]
@@ -47,3 +51,4 @@ addopts = "-v --tb=short"
 
 [tool.uv.sources]
 seed-mining = { path = "../seed-mining" }
+vlm-eval = { path = "../vlm-eval" }

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, CliSettingsSource
 
 
@@ -77,8 +77,18 @@ class TrainingConfig(BaseSettings):
     model_id: str = "stabilityai/stable-diffusion-xl-base-1.0"
 
     # --- Data ---
-    noise_pairs_dir: Path = Field(description="Directory with .npz noise pair files")
-    prompt_manifest_path: Path = Field(description="JSONL file mapping prompt_id to text")
+    noise_pairs_dir: Path | None = Field(
+        default=None, description="Directory with .npz noise pair files (required for ddim)"
+    )
+    prompt_manifest_path: Path | None = Field(
+        default=None, description="JSONL file mapping prompt_id to text (required for ddim)"
+    )
+    dataset_type: str = Field(
+        default="ddim", description="Dataset type: 'ddim' (original .npz) or 'nearest_good' (.pt)"
+    )
+    nearest_good_dir: Path | None = Field(
+        default=None, description="Nearest-good dataset dir (required for nearest_good)"
+    )
 
     # --- Architecture ---
     latent_channels: int = 4
@@ -104,6 +114,25 @@ class TrainingConfig(BaseSettings):
     # --- Runtime ---
     seed: int = 42
     enable_cpu_offload: bool = True
+
+    @model_validator(mode="after")
+    def _check_dataset_fields(self) -> "TrainingConfig":
+        if self.dataset_type == "ddim":
+            if self.noise_pairs_dir is None or self.prompt_manifest_path is None:
+                raise ValueError(
+                    "--noise_pairs_dir and --prompt_manifest_path are required "
+                    "when --dataset_type=ddim"
+                )
+        elif self.dataset_type == "nearest_good":
+            if self.nearest_good_dir is None:
+                raise ValueError(
+                    "--nearest_good_dir is required when --dataset_type=nearest_good"
+                )
+        else:
+            raise ValueError(
+                f"dataset_type must be 'ddim' or 'nearest_good', got '{self.dataset_type}'"
+            )
+        return self
 
     @classmethod
     def settings_customise_sources(
@@ -163,6 +192,138 @@ class InferenceConfig(BaseSettings):
         if v not in ("jpg", "png"):
             raise ValueError(f"image_format must be 'jpg' or 'png', got '{v}'")
         return v
+
+    @property
+    def seeds(self) -> list[int]:
+        return list(range(self.seed_start, self.seed_start + self.seed_range))
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: Any,
+        env_settings: Any,
+        dotenv_settings: Any,
+        file_secret_settings: Any,
+    ) -> tuple[Any, ...]:
+        return (
+            init_settings,
+            CliSettingsSource(settings_cls, cli_parse_args=True),
+            env_settings,
+        )
+
+
+class NearestGoodBuildConfig(BaseSettings):
+    """Configuration for building nearest-good seed transport pairs."""
+
+    model_config = {"env_prefix": "NPNG_", "cli_parse_args": True}
+
+    ranking_dir: Path = Field(description="VLM ranking output directory")
+    out_dir: Path = Field(
+        default=Path("data/nearest_good"),
+        description="Output directory for .pt pair files",
+    )
+    categories: list[str] = Field(default=["numeracy", "spatial"])
+    min_accuracy: float = 0.10
+    max_accuracy: float = 0.90
+    top_k_golden: int = 5
+    num_source_seeds: int = 20
+    latent_channels: int = 4
+    latent_resolution: int = 128
+    train_frac: float = 0.8
+    val_frac: float = 0.1
+    seed: int = 42
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: Any,
+        env_settings: Any,
+        dotenv_settings: Any,
+        file_secret_settings: Any,
+    ) -> tuple[Any, ...]:
+        return (
+            init_settings,
+            CliSettingsSource(settings_cls, cli_parse_args=True),
+            env_settings,
+        )
+
+
+class DiagnosticsConfig(BaseSettings):
+    """Configuration for nearest-good dataset analysis."""
+
+    model_config = {"env_prefix": "NPDIAG_", "cli_parse_args": True}
+
+    dataset_dir: Path = Field(description="Nearest-good dataset directory")
+    output_dir: Path = Field(
+        default=Path("diagnostics_output"),
+        description="Output directory for reports",
+    )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: Any,
+        env_settings: Any,
+        dotenv_settings: Any,
+        file_secret_settings: Any,
+    ) -> tuple[Any, ...]:
+        return (
+            init_settings,
+            CliSettingsSource(settings_cls, cli_parse_args=True),
+            env_settings,
+        )
+
+
+class BenchmarkConfig(BaseSettings):
+    """Configuration for SDXL NPNet benchmarking."""
+
+    model_config = {"env_prefix": "NPBM_", "cli_parse_args": True}
+
+    # --- NPNet ---
+    model_id: str = "stabilityai/stable-diffusion-xl-base-1.0"
+    npnet_checkpoint: Path = Field(description="Path to trained NPNet .pth checkpoint")
+
+    # --- Prompts ---
+    prompt_dataset_dir: Path = Field(
+        default=Path("prompt_dataset"), description="Directory with prompt data files"
+    )
+    split: str = "train"
+    num_objects: int | None = 15
+    num_settings: int | None = 4
+    append_background_to_spatial: bool = False
+
+    # --- Generation (must match evaluated images) ---
+    seed_start: int = 0
+    seed_range: int = 150
+    num_inference_steps: int = 30
+    guidance_scale: float = 7.5
+    height: int = 1024
+    width: int = 1024
+    batch_size: int = 4
+    generator_device: str = "cpu"
+    image_format: str = "jpg"
+    scheduler: str = "euler"
+
+    # --- VLM eval ---
+    vlm_model_id: str = "Qwen/Qwen2.5-VL-7B-Instruct"
+    quantize: str | None = "4bit"
+
+    # --- Output ---
+    out_dir: Path = Field(
+        default=Path("benchmark_output"), description="Output directory"
+    )
+
+    # --- Phase control ---
+    skip_generation: bool = False
+    skip_evaluation: bool = False
+    skip_ranking: bool = False
+
+    # --- Runtime ---
+    enable_cpu_offload: bool = False
+    dry_run: bool = False
 
     @property
     def seeds(self) -> list[int]:

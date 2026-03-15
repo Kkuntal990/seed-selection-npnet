@@ -55,3 +55,24 @@ class NoiseDataset(Dataset[tuple[torch.Tensor, torch.Tensor, str]]):
         prompt_id = int(data["prompt_id"])
         prompt_text = self.prompts.get((category, prompt_id), "")
         return source, target, prompt_text
+
+
+class NearestGoodDataset(Dataset[tuple[torch.Tensor, torch.Tensor, str]]):
+    """Load nearest-good transport pairs from ``.pt`` files.
+
+    Each ``.pt`` file contains ``source_noise``, ``target_noise``, and
+    ``prompt_text`` (plus metadata).  Returns the same 3-tuple as
+    :class:`NoiseDataset` so the training loop is unchanged.
+    """
+
+    def __init__(self, dataset_dir: Path) -> None:
+        self.samples = sorted(dataset_dir.rglob("*.pt"))
+        if not self.samples:
+            raise FileNotFoundError(f"No .pt files found under {dataset_dir}")
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, str]:
+        data = torch.load(self.samples[idx], map_location="cpu", weights_only=True)
+        return data["source_noise"], data["target_noise"], data["prompt_text"]

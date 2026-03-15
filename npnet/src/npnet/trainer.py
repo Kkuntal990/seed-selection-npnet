@@ -11,7 +11,7 @@ from diffusers import StableDiffusionXLPipeline
 from seed_mining.logging_utils import setup_logging
 from torch.utils.data import DataLoader, random_split
 
-from npnet.dataset import NoiseDataset
+from npnet.dataset import NearestGoodDataset, NoiseDataset
 from npnet.models.npnet import NPNet
 
 if TYPE_CHECKING:
@@ -22,13 +22,23 @@ logger = logging.getLogger("npnet.trainer")
 
 def build_dataloaders(config: TrainingConfig) -> tuple[DataLoader, DataLoader]:  # type: ignore[type-arg]
     """Build train and validation data loaders."""
-    dataset = NoiseDataset(config.noise_pairs_dir, config.prompt_manifest_path)
-
-    val_size = int(len(dataset) * config.val_split)
-    train_size = len(dataset) - val_size
-
-    generator = torch.Generator().manual_seed(config.seed)
-    train_ds, val_ds = random_split(dataset, [train_size, val_size], generator=generator)
+    if config.dataset_type == "nearest_good":
+        assert config.nearest_good_dir is not None
+        train_ds = NearestGoodDataset(config.nearest_good_dir / "train")
+        val_ds = NearestGoodDataset(config.nearest_good_dir / "val")
+        logger.info(
+            "Loaded nearest_good dataset: train=%d, val=%d", len(train_ds), len(val_ds)
+        )
+    else:
+        assert config.noise_pairs_dir is not None
+        assert config.prompt_manifest_path is not None
+        dataset = NoiseDataset(config.noise_pairs_dir, config.prompt_manifest_path)
+        val_size = int(len(dataset) * config.val_split)
+        train_size = len(dataset) - val_size
+        generator = torch.Generator().manual_seed(config.seed)
+        train_ds, val_ds = random_split(  # type: ignore[assignment]
+            dataset, [train_size, val_size], generator=generator
+        )
 
     train_loader = DataLoader(
         train_ds,
@@ -54,7 +64,7 @@ def run_training(config: TrainingConfig) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Data
-    logger.info("Loading dataset from %s ...", config.noise_pairs_dir)
+    logger.info("Loading dataset (type=%s) ...", config.dataset_type)
     train_loader, val_loader = build_dataloaders(config)
     logger.info("Train: %d batches, Val: %d batches", len(train_loader), len(val_loader))
 
