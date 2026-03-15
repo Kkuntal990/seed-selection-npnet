@@ -203,15 +203,10 @@ def invert_golden_seed(
     ).images[0]
 
     # Encode image to latent space
-    # With cpu_offload, VAE lives on CPU between calls. Move it to GPU explicitly.
-    gpu_device = torch.device("cuda")
-    pipe.vae.to(gpu_device)
-    image_tensor = pipe.image_processor.preprocess(image).to(gpu_device, dtype=dtype)
+    image_tensor = pipe.image_processor.preprocess(image).to(device, dtype=dtype)
     with torch.no_grad():
         z_0 = pipe.vae.encode(image_tensor).latent_dist.sample()
         z_0 = z_0 * pipe.vae.config.scaling_factor
-    pipe.vae.to("cpu")
-    torch.cuda.empty_cache()
 
     # DDIM inversion: z_0 → z* (golden noise)
     z_star = _ddim_invert(
@@ -322,10 +317,9 @@ def run_build_inversion_local_pairs(config: InversionLocalConfig) -> None:
         variant="fp16",
         use_safetensors=True,
     )
-    if config.enable_cpu_offload:
-        pipe.enable_model_cpu_offload()
-    else:
-        pipe.to("cuda")
+    # Always load full pipeline on GPU — cpu_offload breaks manual VAE
+    # encoding and DDIM inversion hooks. A100 80GB has plenty of VRAM.
+    pipe.to("cuda")
 
     total_pairs = 0
 
