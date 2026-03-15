@@ -202,8 +202,9 @@ def invert_golden_seed(
         latents=source_noise,
     ).images[0]
 
-    # Encode image to latent space
-    image_tensor = pipe.image_processor.preprocess(image).to(device, dtype=dtype)
+    # Encode image to latent space (move to VAE device for cpu_offload compat)
+    vae_device = next(pipe.vae.parameters()).device
+    image_tensor = pipe.image_processor.preprocess(image).to(vae_device, dtype=dtype)
     with torch.no_grad():
         z_0 = pipe.vae.encode(image_tensor).latent_dist.sample()
         z_0 = z_0 * pipe.vae.config.scaling_factor
