@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import torch
@@ -74,16 +75,19 @@ class PrecomputedEmbedDataset(Dataset[tuple[torch.Tensor, torch.Tensor, torch.Te
 
 def precompute_prompt_embeddings(
     pipe: StableDiffusionXLPipeline,
-    datasets: list[Dataset[tuple[torch.Tensor, torch.Tensor, str]]],
+    dataset_dir: Path,
     device: torch.device,
     batch_size: int = 64,
 ) -> dict[str, torch.Tensor]:
     """Encode all unique prompts once and return a {prompt_text: embedding} dict."""
+    import json
+
     unique_prompts: set[str] = set()
-    for ds in datasets:
-        for i in range(len(ds)):  # type: ignore[arg-type]
-            _, _, prompt = ds[i]
-            unique_prompts.add(prompt)
+    for manifest in dataset_dir.rglob("manifest.jsonl"):
+        for line in manifest.read_text().splitlines():
+            if line.strip():
+                rec = json.loads(line)
+                unique_prompts.add(rec["prompt_text"])
 
     logger.info("Pre-computing embeddings for %d unique prompts ...", len(unique_prompts))
     prompt_list = sorted(unique_prompts)
@@ -161,7 +165,7 @@ def run_training(config: TrainingConfig) -> None:
     pipe.to(device)
 
     # Pre-compute all prompt embeddings and wrap datasets
-    embed_cache = precompute_prompt_embeddings(pipe, [train_ds, val_ds], device)
+    embed_cache = precompute_prompt_embeddings(pipe, config.dataset_dir, device)
     train_ds = PrecomputedEmbedDataset(train_ds, embed_cache)
     val_ds = PrecomputedEmbedDataset(val_ds, embed_cache)
 
