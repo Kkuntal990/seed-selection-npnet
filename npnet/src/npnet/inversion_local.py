@@ -202,12 +202,16 @@ def invert_golden_seed(
         latents=source_noise,
     ).images[0]
 
-    # Encode image to latent space (move to VAE device for cpu_offload compat)
-    vae_device = next(pipe.vae.parameters()).device
-    image_tensor = pipe.image_processor.preprocess(image).to(vae_device, dtype=dtype)
+    # Encode image to latent space
+    # With cpu_offload, VAE lives on CPU between calls. Move it to GPU explicitly.
+    gpu_device = torch.device("cuda")
+    pipe.vae.to(gpu_device)
+    image_tensor = pipe.image_processor.preprocess(image).to(gpu_device, dtype=dtype)
     with torch.no_grad():
         z_0 = pipe.vae.encode(image_tensor).latent_dist.sample()
         z_0 = z_0 * pipe.vae.config.scaling_factor
+    pipe.vae.to("cpu")
+    torch.cuda.empty_cache()
 
     # DDIM inversion: z_0 → z* (golden noise)
     z_star = _ddim_invert(
