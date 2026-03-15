@@ -6,7 +6,8 @@ import logging
 from typing import TYPE_CHECKING
 
 import torch
-from diffusers import DPMSolverMultistepScheduler, StableDiffusionXLPipeline
+from accelerate import PartialState
+from diffusers import EulerDiscreteScheduler, StableDiffusionXLPipeline
 from seed_mining.io_utils import image_path, save_image_atomic
 from seed_mining.logging_utils import ThroughputTracker, setup_logging
 from seed_mining.prompts import Prompt, build_all_prompts
@@ -20,11 +21,23 @@ logger = logging.getLogger("npnet.inference")
 
 
 def run_golden_generation(config: InferenceConfig) -> None:
-    """Generate images using golden noise from trained NPNet."""
-    log_dir = config.out_dir / "logs"
-    setup_logging(log_dir, rank=0)
+    """Generate images using golden noise from trained NPNet.
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    Supports multi-GPU via accelerate PartialState for seed sharding:
+    each GPU processes a different subset of seeds.
+    """
+    distributed = PartialState()
+    device = distributed.device
+    is_main = distributed.is_main_process
+
+    if is_main:
+        log_dir = config.out_dir / "logs"
+        setup_logging(log_dir, rank=0)
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(name)s %(levelname)s: %(message)s",
+            datefmt="%H:%M:%S",
+        )
 
     # Build prompts
     logger.info("Building prompts (split=%s) ...", config.split)
@@ -37,9 +50,19 @@ def run_golden_generation(config: InferenceConfig) -> None:
     )
 
     categories: list[tuple[str, list[Prompt]]] = [("numeracy", numeracy), ("spatial", spatial)]
-    seeds = config.seeds
+    all_seeds = config.seeds
 
-    total = sum(len(seeds) * len(prompts) for _, prompts in categories)
+    # Shard seeds across GPUs
+    my_seeds = all_seeds[distributed.process_index :: distributed.num_processes]
+    logger.info(
+        "GPU %d/%d: processing %d/%d seeds",
+        distributed.process_index,
+        distributed.num_processes,
+        len(my_seeds),
+        len(all_seeds),
+    )
+
+    total = sum(len(my_seeds) * len(prompts) for _, prompts in categories)
     tracker = ThroughputTracker(total=total)
 
     if config.dry_run:
@@ -54,7 +77,7 @@ def run_golden_generation(config: InferenceConfig) -> None:
         variant="fp16",
         use_safetensors=True,
     )
-    pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
+    pipe.scheduler = EulerDiscreteScheduler.from_config(pipe.scheduler.config)
     if config.enable_cpu_offload:
         pipe.enable_model_cpu_offload()
     else:
@@ -68,7 +91,7 @@ def run_golden_generation(config: InferenceConfig) -> None:
     npnet.eval()
 
     for category, prompts in categories:
-        for seed in seeds:
+        for seed in my_seeds:
             for prompt in prompts:
                 dest = image_path(
                     config.out_dir, category, seed, prompt.prompt_id, config.image_format
@@ -109,6 +132,9 @@ def run_golden_generation(config: InferenceConfig) -> None:
                 save_image_atomic(image, dest)
                 tracker.update(1)
 
-            logger.info("Seed %d [%s] done | %s", seed, category, tracker.summary_line())
+            if is_main:
+                logger.info("Seed %d [%s] done | %s", seed, category, tracker.summary_line())
 
-    logger.info("Golden noise generation complete | %s", tracker.summary_line())
+    distributed.wait_for_everyone()
+    if is_main:
+        logger.info("Golden noise generation complete | %s", tracker.summary_line())

@@ -1,0 +1,227 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nearest-good-benchmark
+  labels:
+    app: npnet
+    stage: benchmark
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app: npnet
+        stage: benchmark
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: benchmark
+          image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash"]
+          args:
+          - "-c"
+          - |
+            set -e
+
+            echo "=== Installing dependencies ==="
+            apt-get update -qq && apt-get install -y -qq git > /dev/null 2>&1
+
+            # Clone or pull
+            if [ -d /workspace/repo/.git ]; then
+              cd /workspace/repo && git pull
+            else
+              git clone https://github.com/Kkuntal990/seed-selection-npnet.git /workspace/repo
+            fi
+
+            cd /workspace/repo
+            pip install --root-user-action=ignore --no-cache-dir \
+              -e ./seed-mining -e ./vlm-eval -e ./npnet 2>&1 | tail -3
+            pip install --root-user-action=ignore \
+              "diffusers==0.30.3" "transformers==4.45.0" "timm>=1.0" 2>&1 | tail -3
+            echo "=== Dependencies installed ==="
+
+            # ---------------------------------------------------------------
+            # STEP 2: Generate NPNet+SDXL images (multi-GPU, seed sharding)
+            # ---------------------------------------------------------------
+            echo "========================================="
+            echo "STEP 2: Golden Noise Image Generation"
+            echo "  Checkpoint: ${NPNET_CHECKPOINT}"
+            echo "  Seeds: ${SEED_START}-$((SEED_START + SEED_RANGE - 1))"
+            echo "  GPUs: 2 (seed sharding)"
+            echo "========================================="
+
+            cd /workspace/repo/npnet
+
+            # Use accelerate for multi-GPU seed sharding in generation
+            accelerate launch --num_processes 2 \
+              scripts/generate_golden_noise.py \
+              --npnet_checkpoint "${NPNET_CHECKPOINT}" \
+              --out_dir "${GOLDEN_OUTPUT_DIR}" \
+              --guidance_scale "${GUIDANCE_SCALE}" \
+              --num_inference_steps "${NUM_INFERENCE_STEPS}" \
+              --seed_start "${SEED_START}" \
+              --seed_range "${SEED_RANGE}" \
+              --image_format jpg \
+              --prompt_dataset_dir /workspace/repo/seed-mining/prompt_dataset
+
+            echo "=== Step 2 complete: image generation ==="
+
+            # ---------------------------------------------------------------
+            # STEP 3: VLM evaluation (single GPU — VLM needs full GPU memory)
+            # ---------------------------------------------------------------
+            echo "========================================="
+            echo "STEP 3: VLM Evaluation"
+            echo "========================================="
+
+            cd /workspace/repo
+            python -m vlm_eval.cli eval \
+              --images_dir "${GOLDEN_OUTPUT_DIR}" \
+              --prompt_dataset_dir /workspace/repo/seed-mining/prompt_dataset \
+              --eval_out_dir "${EVAL_OUTPUT_DIR}" \
+              --seed_start "${SEED_START}" \
+              --seed_range "${SEED_RANGE}" \
+              --image_format jpg
+
+            echo "=== Step 3 complete: VLM evaluation ==="
+
+            # ---------------------------------------------------------------
+            # STEP 4: Ranking
+            # ---------------------------------------------------------------
+            echo "========================================="
+            echo "STEP 4: Seed Ranking"
+            echo "========================================="
+
+            python -m vlm_eval.cli rank \
+              --eval_results_dir "${EVAL_OUTPUT_DIR}" \
+              --output_dir "${RANKING_OUTPUT_DIR}"
+
+            echo "=== Step 4 complete: ranking ==="
+
+            # ---------------------------------------------------------------
+            # STEP 5: Human Preference Metrics (baseline vs NPNet)
+            # ---------------------------------------------------------------
+            echo "========================================="
+            echo "STEP 5: Human Preference Metrics"
+            echo "  Baseline: ${BASELINE_IMAGES_DIR}"
+            echo "  NPNet:    ${GOLDEN_OUTPUT_DIR}"
+            echo "========================================="
+
+            cd /workspace/repo/npnet
+            python scripts/benchmark_sdxl.py \
+              --npnet_checkpoint "${NPNET_CHECKPOINT}" \
+              --baseline_images_dir "${BASELINE_IMAGES_DIR}" \
+              --out_dir "${BENCHMARK_OUTPUT_DIR}" \
+              --prompt_dataset_dir /workspace/repo/seed-mining/prompt_dataset \
+              --skip_generation true \
+              --skip_evaluation true \
+              --skip_ranking true \
+              --guidance_scale "${GUIDANCE_SCALE}" \
+              --num_inference_steps "${NUM_INFERENCE_STEPS}" \
+              --seed_start "${SEED_START}" \
+              --seed_range "${SEED_RANGE}"
+
+            echo "========================================="
+            echo "ALL STEPS COMPLETE"
+            echo "  Golden images:  ${GOLDEN_OUTPUT_DIR}"
+            echo "  VLM eval:       ${EVAL_OUTPUT_DIR}"
+            echo "  Ranking:        ${RANKING_OUTPUT_DIR}"
+            echo "  Benchmark:      ${BENCHMARK_OUTPUT_DIR}"
+            echo "========================================="
+
+          resources:
+            requests:
+              nvidia.com/a100: "2"
+              memory: "64Gi"
+              cpu: "8"
+            limits:
+              nvidia.com/a100: "2"
+              memory: "80Gi"
+              cpu: "12"
+
+          volumeMounts:
+          - name: output
+            mountPath: /output
+          - name: cache-volume
+            mountPath: /cache
+          - name: dev-shm
+            mountPath: /dev/shm
+
+          env:
+          - name: HF_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: hf-token
+                key: token
+                optional: true
+          - name: HF_HOME
+            value: "/cache/hf"
+          - name: TRANSFORMERS_CACHE
+            value: "/cache/hf/transformers"
+          - name: TORCH_HOME
+            value: "/cache/torch"
+          - name: PIP_CACHE_DIR
+            value: "/cache/pip"
+          - name: PYTHONUNBUFFERED
+            value: "1"
+          - name: PYTORCH_CUDA_ALLOC_CONF
+            value: "expandable_segments:True"
+
+          # --- Experiment config ---
+          - name: NPNET_CHECKPOINT
+            value: "/output/npnet_checkpoints/nearest_good_2gpu/npnet_best.pth"
+          - name: GOLDEN_OUTPUT_DIR
+            value: "/output/golden_output/nearest_good"
+          - name: BASELINE_IMAGES_DIR
+            value: "/output/golden-noise-project/output/images"
+          - name: EVAL_OUTPUT_DIR
+            value: "/output/eval_nearest_good"
+          - name: RANKING_OUTPUT_DIR
+            value: "/output/ranking_nearest_good"
+          - name: BENCHMARK_OUTPUT_DIR
+            value: "/output/benchmark/nearest_good"
+          - name: SEED_START
+            value: "0"
+          - name: SEED_RANGE
+            value: "150"
+          - name: GUIDANCE_SCALE
+            value: "7.5"
+          - name: NUM_INFERENCE_STEPS
+            value: "30"
+
+      tolerations:
+      - effect: NoSchedule
+        key: nautilus.io/hardware
+        operator: Equal
+        value: large-gpu
+      - effect: PreferNoSchedule
+        key: nvidia.com/gpu
+        operator: Exists
+      - key: nautilus.io/reservation
+        operator: Exists
+        effect: NoSchedule
+      - key: nautilus.io/issue
+        operator: Exists
+        effect: NoSchedule
+
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu.product
+                operator: In
+                values:
+                - NVIDIA-A100-SXM4-80GB
+
+      volumes:
+      - name: output
+        persistentVolumeClaim:
+          claimName: seed-mining-output
+      - name: cache-volume
+        emptyDir:
+          sizeLimit: 100Gi
+      - name: dev-shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 16Gi
