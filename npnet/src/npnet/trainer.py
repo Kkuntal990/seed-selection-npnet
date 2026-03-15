@@ -147,7 +147,8 @@ def run_training(config: TrainingConfig) -> None:
         use_safetensors=True,
     )
     if config.enable_cpu_offload:
-        pipe.enable_model_cpu_offload()
+        gpu_id = device.index if device.index is not None else 0
+        pipe.enable_model_cpu_offload(gpu_id=gpu_id)
     else:
         pipe.to(device)
 
