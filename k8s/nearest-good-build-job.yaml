@@ -1,0 +1,112 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nearest-good-build
+  labels:
+    app: npnet
+    stage: nearest-good-build
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: npnet
+        stage: nearest-good-build
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: builder
+          image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash"]
+          args:
+          - "-c"
+          - |
+            set -e
+
+            echo "=== Installing dependencies ==="
+            apt-get update && apt-get install -y git
+            git clone https://github.com/Kkuntal990/seed-selection-npnet.git /workspace/repo
+            cd /workspace/repo && pip install --root-user-action=ignore --no-cache-dir ./seed-mining ./vlm-eval ./npnet
+            echo "=== Dependencies installed ==="
+
+            echo "========================================="
+            echo "Nearest-Good Seed Transport — Build Pairs"
+            echo "Ranking dir: ${RANKING_DIR}"
+            echo "Output dir:  ${OUT_DIR}"
+            echo "========================================="
+
+            echo "Starting pair building..."
+            cd /workspace/repo/npnet && python scripts/build_nearest_good_pairs.py \
+              --ranking_dir "${RANKING_DIR}" \
+              --out_dir "${OUT_DIR}" \
+              --min_accuracy "${MIN_ACCURACY}" \
+              --max_accuracy "${MAX_ACCURACY}" \
+              --top_k_golden "${TOP_K_GOLDEN}" \
+              --num_source_seeds "${NUM_SOURCE_SEEDS}" \
+              --seed "${SEED}"
+
+            echo "========================================="
+            echo "Analyzing dataset..."
+            python scripts/analyze_nearest_good_dataset.py \
+              --dataset_dir "${OUT_DIR}" \
+              --output_dir "${OUT_DIR}/diagnostics"
+
+            echo "Done."
+
+          resources:
+            requests:
+              cpu: "2"
+              memory: "8Gi"
+            limits:
+              cpu: "4"
+              memory: "16Gi"
+
+          volumeMounts:
+          - name: output
+            mountPath: /output
+          - name: cache-volume
+            mountPath: /cache
+
+          env:
+          # Build config
+          - name: RANKING_DIR
+            value: "/output/sdxl/ranking"
+          - name: OUT_DIR
+            value: "/output/nearest_good"
+          - name: MIN_ACCURACY
+            value: "0.10"
+          - name: MAX_ACCURACY
+            value: "0.90"
+          - name: TOP_K_GOLDEN
+            value: "5"
+          - name: NUM_SOURCE_SEEDS
+            value: "20"
+          - name: SEED
+            value: "42"
+
+          - name: PYTHONUNBUFFERED
+            value: "1"
+
+      tolerations:
+      - effect: NoSchedule
+        key: nautilus.io/hardware
+        operator: Equal
+        value: large-gpu
+      - effect: PreferNoSchedule
+        key: nvidia.com/gpu
+        operator: Exists
+      - key: nautilus.io/reservation
+        operator: Exists
+        effect: NoSchedule
+      - key: nautilus.io/issue
+        operator: Exists
+        effect: NoSchedule
+
+      volumes:
+      - name: output
+        persistentVolumeClaim:
+          claimName: seed-mining-output
+      - name: cache-volume
+        emptyDir:
+          sizeLimit: 50Gi

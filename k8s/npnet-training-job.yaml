@@ -27,7 +27,7 @@ spec:
             echo "=== Installing dependencies ==="
             apt-get update && apt-get install -y git
             git clone https://github.com/Kkuntal990/seed-selection-npnet.git /workspace/repo
-            cd /workspace/repo && pip install --root-user-action=ignore --no-cache-dir ./seed-mining ./npnet
+            cd /workspace/repo && pip install --root-user-action=ignore --no-cache-dir ./seed-mining ./vlm-eval ./npnet
             echo "=== Dependencies installed ==="
 
             echo "========================================="
