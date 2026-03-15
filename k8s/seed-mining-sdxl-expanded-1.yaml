@@ -1,0 +1,164 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seed-mining-sdxl-expanded-1
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: seed-mining
+        task: image-generation
+        model: sdxl-base-1.0
+        gpu: a100
+        chunk: "1"
+    spec:
+      restartPolicy: Never
+
+      containers:
+      - name: generator
+        image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/bash"]
+        args:
+        - "-c"
+        - |
+          set -e
+
+          echo "=== Installing dependencies ==="
+          apt-get update && apt-get install -y git
+          git clone https://github.com/Kkuntal990/seed-selection-npnet.git /workspace/repo
+          cd /workspace/repo && pip install --root-user-action=ignore --no-cache-dir ./seed-mining
+          echo "=== Dependencies installed ==="
+
+          echo "========================================="
+          echo "Seed Mining — Image Generation (${NPROC} GPUs)"
+          echo "Model: ${MODEL_ID}"
+          echo "Seeds: ${SEED_START}..$(( SEED_START + SEED_RANGE - 1 ))"
+          echo "Prompts: 30 objects × 8 backgrounds (expanded)"
+          echo "========================================="
+
+          nvidia-smi
+
+          echo "Starting multi-GPU image generation..."
+          cd /workspace/repo/seed-mining && accelerate launch \
+            --num_processes "${NPROC}" \
+            scripts/generate_seed_mining_images.py \
+            --model_id "${MODEL_ID}" \
+            --out_dir "${OUTPUT_DIR}" \
+            --seed_start "${SEED_START}" \
+            --seed_range "${SEED_RANGE}" \
+            --height "${HEIGHT}" \
+            --width "${WIDTH}" \
+            --num_inference_steps "${NUM_INFERENCE_STEPS}" \
+            --guidance_scale "${GUIDANCE_SCALE}" \
+            --batch_size "${BATCH_SIZE}" \
+            --generator_device "${GENERATOR_DEVICE}" \
+            --scheduler "${SCHEDULER}" \
+            --image_format "${IMAGE_FORMAT}" \
+            --num_objects "${NUM_OBJECTS}" \
+            --num_settings "${NUM_SETTINGS}"
+
+        resources:
+          requests:
+            nvidia.com/a100: "2"
+            memory: "32Gi"
+            cpu: "4"
+          limits:
+            nvidia.com/a100: "2"
+            memory: "32Gi"
+            cpu: "4"
+
+        volumeMounts:
+        - name: cache-volume
+          mountPath: /cache
+        - name: outputs-volume
+          mountPath: /output
+        - name: dev-shm
+          mountPath: /dev/shm
+
+        env:
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token
+              key: token
+              optional: true
+        - name: HF_HOME
+          value: "/cache/hf"
+        - name: TRANSFORMERS_CACHE
+          value: "/cache/hf/transformers"
+        - name: TORCH_HOME
+          value: "/cache/torch"
+        - name: MODEL_ID
+          value: "stabilityai/stable-diffusion-xl-base-1.0"
+        - name: OUTPUT_DIR
+          value: "/output/sdxl-expanded"
+        - name: SEED_START
+          value: "50"
+        - name: SEED_RANGE
+          value: "50"
+        - name: HEIGHT
+          value: "1024"
+        - name: WIDTH
+          value: "1024"
+        - name: NUM_INFERENCE_STEPS
+          value: "30"
+        - name: GUIDANCE_SCALE
+          value: "7.5"
+        - name: BATCH_SIZE
+          value: "8"
+        - name: GENERATOR_DEVICE
+          value: "cpu"
+        - name: SCHEDULER
+          value: "euler"
+        - name: IMAGE_FORMAT
+          value: "jpg"
+        - name: NUM_OBJECTS
+          value: "30"
+        - name: NUM_SETTINGS
+          value: "8"
+        - name: NPROC
+          value: "2"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "expandable_segments:True"
+        - name: NCCL_DEBUG
+          value: "WARN"
+        - name: NCCL_TIMEOUT
+          value: "1800"
+
+      tolerations:
+      - effect: NoSchedule
+        key: nautilus.io/hardware
+        operator: Equal
+        value: large-gpu
+      - effect: PreferNoSchedule
+        key: nvidia.com/gpu
+        operator: Exists
+      - key: nautilus.io/reservation
+        operator: Exists
+        effect: NoSchedule
+
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu.product
+                operator: In
+                values:
+                - NVIDIA-A100-SXM4-80GB
+
+      volumes:
+      - name: cache-volume
+        emptyDir:
+          sizeLimit: 100Gi
+      - name: outputs-volume
+        persistentVolumeClaim:
+          claimName: seed-mining-output
+      - name: dev-shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 16Gi

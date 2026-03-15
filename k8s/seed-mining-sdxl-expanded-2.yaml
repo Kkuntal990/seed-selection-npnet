@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: seed-mining-sdxl-expanded
+  name: seed-mining-sdxl-expanded-2
 spec:
   backoffLimit: 3
   template:
@@ -11,6 +11,7 @@ spec:
         task: image-generation
         model: sdxl-base-1.0
         gpu: a100
+        chunk: "2"
     spec:
       restartPolicy: Never
 
@@ -60,13 +61,13 @@ spec:
 
         resources:
           requests:
-            nvidia.com/gpu: "2"
-            memory: "64Gi"
-            cpu: "8"
+            nvidia.com/a100: "2"
+            memory: "32Gi"
+            cpu: "4"
           limits:
-            nvidia.com/gpu: "2"
-            memory: "96Gi"
-            cpu: "16"
+            nvidia.com/a100: "2"
+            memory: "32Gi"
+            cpu: "4"
 
         volumeMounts:
         - name: cache-volume
@@ -77,31 +78,26 @@ spec:
           mountPath: /dev/shm
 
         env:
-        # HuggingFace token (required for gated models)
         - name: HF_TOKEN
           valueFrom:
             secretKeyRef:
               name: hf-token
               key: token
               optional: true
-
-        # Cache directories (using ephemeral emptyDir)
         - name: HF_HOME
           value: "/cache/hf"
         - name: TRANSFORMERS_CACHE
           value: "/cache/hf/transformers"
         - name: TORCH_HOME
           value: "/cache/torch"
-
-        # Model configuration
         - name: MODEL_ID
           value: "stabilityai/stable-diffusion-xl-base-1.0"
         - name: OUTPUT_DIR
           value: "/output/sdxl-expanded"
         - name: SEED_START
-          value: "0"
+          value: "100"
         - name: SEED_RANGE
-          value: "150"
+          value: "50"
         - name: HEIGHT
           value: "1024"
         - name: WIDTH
@@ -122,12 +118,8 @@ spec:
           value: "30"
         - name: NUM_SETTINGS
           value: "8"
-
-        # DDP configuration
         - name: NPROC
           value: "2"
-
-        # Python and CUDA settings
         - name: PYTHONUNBUFFERED
           value: "1"
         - name: PYTORCH_CUDA_ALLOC_CONF
@@ -169,4 +161,4 @@ spec:
       - name: dev-shm
         emptyDir:
           medium: Memory
-          sizeLimit: 48Gi
+          sizeLimit: 16Gi
