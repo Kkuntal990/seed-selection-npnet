@@ -167,6 +167,7 @@ def run_training(config: TrainingConfig) -> None:
     )
 
     best_val_loss = float("inf")
+    epochs_without_improvement = 0
     if is_main:
         config.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -176,11 +177,12 @@ def run_training(config: TrainingConfig) -> None:
 
     logger.info(
         "Training on %d GPU(s), batch_size=%d, effective_batch=%d, "
-        "loss=residual(cosine+L1+MSE), warmup=%d steps",
+        "loss=residual(cosine+L1+MSE), warmup=%d steps, early_stop=%d epochs",
         accelerator.num_processes,
         config.batch_size,
         config.batch_size * accelerator.num_processes * config.grad_accumulation_steps,
         warmup_steps,
+        config.early_stopping_patience,
     )
 
     for epoch in range(1, config.epochs + 1):
@@ -260,8 +262,31 @@ def run_training(config: TrainingConfig) -> None:
 
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
+                epochs_without_improvement = 0
                 unwrapped.save_checkpoint(config.checkpoint_dir / "npnet_best.pth")
                 logger.info("New best val_loss=%.6f", avg_val_loss)
+            else:
+                epochs_without_improvement += 1
+                logger.info(
+                    "No improvement for %d epoch(s) (patience=%d)",
+                    epochs_without_improvement,
+                    config.early_stopping_patience,
+                )
+
+        # Broadcast early stopping decision from main to all processes
+        should_stop = torch.tensor(
+            [1 if epochs_without_improvement >= config.early_stopping_patience else 0],
+            device=device,
+        )
+        should_stop = accelerator.reduce(should_stop, reduction="max")
+        if should_stop.item() >= 1:
+            if is_main:
+                logger.info(
+                    "Early stopping at epoch %d (no improvement for %d epochs)",
+                    epoch,
+                    config.early_stopping_patience,
+                )
+            break
 
     # Save final
     if is_main:

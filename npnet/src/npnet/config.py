@@ -110,6 +110,7 @@ class TrainingConfig(BaseSettings):
     )
     pretrained_path: Path | None = None
     save_every_n_epochs: int = 5
+    early_stopping_patience: int = 10
 
     # --- Runtime ---
     seed: int = 42
