@@ -61,6 +61,11 @@ def build_dataloaders(config: TrainingConfig) -> tuple[DataLoader, DataLoader]: 
 def run_training(config: TrainingConfig) -> None:
     """Train NPNet on collected noise pairs."""
     setup_logging(config.checkpoint_dir / "logs", rank=0)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Data
@@ -98,6 +103,9 @@ def run_training(config: TrainingConfig) -> None:
     best_val_loss = float("inf")
     config.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
+    total_train_steps = len(train_loader)
+    log_every = max(1, total_train_steps // 10)  # Log ~10 times per epoch
+
     for epoch in range(1, config.epochs + 1):
         # --- Train ---
         npnet.train()
@@ -128,6 +136,13 @@ def run_training(config: TrainingConfig) -> None:
 
             train_loss_sum += loss.item() * config.grad_accumulation_steps
             train_steps += 1
+
+            if step % log_every == 0 or step == 1:
+                avg_so_far = train_loss_sum / train_steps
+                logger.info(
+                    "Epoch %d/%d [step %d/%d] loss=%.6f",
+                    epoch, config.epochs, step, total_train_steps, avg_so_far,
+                )
 
         avg_train_loss = train_loss_sum / max(train_steps, 1)
 
