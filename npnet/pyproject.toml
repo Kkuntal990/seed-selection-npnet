@@ -21,6 +21,7 @@ dependencies = [
     "timm",
     "sentencepiece",
     "protobuf",
+    "image-reward",
 ]
 
 [dependency-groups]

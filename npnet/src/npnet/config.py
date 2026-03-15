@@ -311,6 +311,12 @@ class BenchmarkConfig(BaseSettings):
     vlm_model_id: str = "Qwen/Qwen2.5-VL-7B-Instruct"
     quantize: str | None = "4bit"
 
+    # --- Baseline comparison ---
+    baseline_images_dir: Path | None = Field(
+        default=None,
+        description="Baseline SDXL images dir for human preference comparison",
+    )
+
     # --- Output ---
     out_dir: Path = Field(
         default=Path("benchmark_output"), description="Output directory"

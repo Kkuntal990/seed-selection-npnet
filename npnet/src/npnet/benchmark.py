@@ -1,4 +1,4 @@
-"""Benchmark pipeline: generate golden noise images -> VLM eval -> metrics."""
+"""Benchmark pipeline: generate golden noise images -> VLM eval -> human preference metrics."""
 
 from __future__ import annotations
 
@@ -9,9 +9,11 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 from diffusers import EulerDiscreteScheduler, StableDiffusionXLPipeline
+from PIL import Image
 from seed_mining.io_utils import image_path, save_image_atomic
 from seed_mining.logging_utils import ThroughputTracker, setup_logging
 from seed_mining.prompts import Prompt, build_all_prompts
+from tqdm import tqdm
 
 from npnet.models.npnet import NPNet
 
@@ -169,7 +171,227 @@ def _run_vlm_ranking(config: BenchmarkConfig) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 4: Compute experiment metrics
+# Phase 4: Human preference metrics
+# ---------------------------------------------------------------------------
+
+
+def _load_hpsv2_scorer() -> Any:
+    """Load HPSv2 scorer."""
+    import hpsv2
+    return hpsv2
+
+
+def _load_image_reward_scorer(device: torch.device) -> Any:
+    """Load ImageReward model."""
+    import ImageReward as image_reward
+    return image_reward.load("ImageReward-v1.0", device=device)
+
+
+def _load_clip_scorer(device: torch.device) -> tuple[Any, Any]:
+    """Load CLIP model and processor for CLIPScore."""
+    from transformers import CLIPModel, CLIPProcessor
+
+    model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14").to(device)
+    processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
+    return model, processor
+
+
+def _load_pickscore_scorer(device: torch.device) -> tuple[Any, Any]:
+    """Load PickScore model and processor."""
+    from transformers import AutoModel, AutoProcessor
+
+    processor = AutoProcessor.from_pretrained("yuvalkirstain/PickScore_v1")
+    model = AutoModel.from_pretrained("yuvalkirstain/PickScore_v1").eval().to(device)
+    return model, processor
+
+
+def compute_clip_score(
+    model: Any,
+    processor: Any,
+    image: Image.Image,
+    prompt: str,
+    device: torch.device,
+) -> float:
+    """Compute CLIPScore (cosine similarity between image and text embeddings)."""
+    inputs = processor(text=[prompt], images=[image], return_tensors="pt", padding=True)
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+    with torch.no_grad():
+        outputs = model(**inputs)
+    return outputs.logits_per_image.item()
+
+
+def compute_pick_score(
+    model: Any,
+    processor: Any,
+    image: Image.Image,
+    prompt: str,
+    device: torch.device,
+) -> float:
+    """Compute PickScore for an image-prompt pair."""
+    inputs = processor(
+        images=[image], text=[prompt], return_tensors="pt", padding=True
+    )
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+    with torch.no_grad():
+        outputs = model(**inputs)
+    return outputs.logits_per_image.item()
+
+
+def _score_image_dir(
+    images_dir: Path,
+    prompts: list[tuple[str, str, int]],
+    seeds: list[int],
+    image_format: str,
+    scorers: dict[str, Any],
+    device: torch.device,
+) -> dict[str, list[float]]:
+    """Score all images in a directory with all loaded scorers.
+
+    Args:
+        prompts: list of (category, prompt_text, prompt_id)
+        seeds: list of seed ints
+        scorers: dict of scorer_name -> scorer_object/tuple
+
+    Returns:
+        dict of metric_name -> list of scores (one per image)
+    """
+    all_scores: dict[str, list[float]] = {name: [] for name in scorers}
+
+    total = len(seeds) * len(prompts)
+    pbar = tqdm(total=total, desc="Scoring images", unit="img")
+
+    for seed in seeds:
+        for category, prompt_text, prompt_id in prompts:
+            img_path = image_path(images_dir, category, seed, prompt_id, image_format)
+            if not img_path.exists():
+                pbar.update(1)
+                continue
+
+            img = Image.open(img_path).convert("RGB")
+
+            for name, scorer in scorers.items():
+                try:
+                    if name == "clip_score":
+                        model, processor = scorer
+                        score = compute_clip_score(model, processor, img, prompt_text, device)
+                    elif name == "pick_score":
+                        model, processor = scorer
+                        score = compute_pick_score(model, processor, img, prompt_text, device)
+                    elif name == "image_reward":
+                        score = scorer.score(prompt_text, img)
+                    elif name == "hpsv2":
+                        score = scorer.score(img, prompt_text)[0]
+                    else:
+                        score = 0.0
+                    all_scores[name].append(score)
+                except Exception as e:
+                    logger.warning("Scorer %s failed on seed=%d prompt=%d: %s", name, seed, prompt_id, e)
+                    all_scores[name].append(0.0)
+
+            pbar.update(1)
+
+    pbar.close()
+    return all_scores
+
+
+def run_human_preference_eval(
+    baseline_images_dir: Path,
+    npnet_images_dir: Path,
+    config: "BenchmarkConfig",
+) -> dict[str, Any]:
+    """Run human preference metrics on baseline vs NPNet images.
+
+    Computes PickScore, CLIPScore, ImageReward on both sets and produces
+    a side-by-side comparison.
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Build prompt list
+    numeracy, spatial = build_all_prompts(
+        config.prompt_dataset_dir,
+        config.split,
+        num_objects=config.num_objects,
+        num_settings=config.num_settings,
+        append_background_to_spatial=config.append_background_to_spatial,
+    )
+    prompts: list[tuple[str, str, int]] = []
+    for p in numeracy:
+        prompts.append(("numeracy", p.text, p.prompt_id))
+    for p in spatial:
+        prompts.append(("spatial", p.text, p.prompt_id))
+
+    seeds = config.seeds
+
+    # Load scorers (try each, skip if not installed)
+    scorers: dict[str, Any] = {}
+
+    logger.info("Loading human preference scorers...")
+    try:
+        scorers["pick_score"] = _load_pickscore_scorer(device)
+        logger.info("  PickScore: loaded")
+    except Exception as e:
+        logger.warning("  PickScore: unavailable (%s)", e)
+
+    try:
+        scorers["clip_score"] = _load_clip_scorer(device)
+        logger.info("  CLIPScore: loaded")
+    except Exception as e:
+        logger.warning("  CLIPScore: unavailable (%s)", e)
+
+    try:
+        scorers["image_reward"] = _load_image_reward_scorer(device)
+        logger.info("  ImageReward: loaded")
+    except Exception as e:
+        logger.warning("  ImageReward: unavailable (%s)", e)
+
+    if not scorers:
+        logger.error("No human preference scorers available. Install: image-reward, transformers")
+        return {}
+
+    # Score baseline images
+    logger.info("Scoring baseline images from %s ...", baseline_images_dir)
+    baseline_scores = _score_image_dir(
+        baseline_images_dir, prompts, seeds, config.image_format, scorers, device
+    )
+
+    # Score NPNet images
+    logger.info("Scoring NPNet images from %s ...", npnet_images_dir)
+    npnet_scores = _score_image_dir(
+        npnet_images_dir, prompts, seeds, config.image_format, scorers, device
+    )
+
+    # Compute comparison
+    results: dict[str, Any] = {}
+    for metric_name in scorers:
+        b_scores = baseline_scores.get(metric_name, [])
+        n_scores = npnet_scores.get(metric_name, [])
+
+        if not b_scores or not n_scores:
+            continue
+
+        b_mean = sum(b_scores) / len(b_scores)
+        n_mean = sum(n_scores) / len(n_scores)
+
+        # Win rate: fraction of images where NPNet > baseline
+        wins = sum(1 for b, n in zip(b_scores, n_scores) if n > b)
+        ties = sum(1 for b, n in zip(b_scores, n_scores) if n == b)
+        total = min(len(b_scores), len(n_scores))
+
+        results[metric_name] = {
+            "baseline_mean": b_mean,
+            "npnet_mean": n_mean,
+            "improvement": n_mean - b_mean,
+            "improvement_pct": ((n_mean - b_mean) / abs(b_mean) * 100) if b_mean != 0 else 0,
+            "npnet_win_rate": wins / total if total > 0 else 0,
+            "tie_rate": ties / total if total > 0 else 0,
+            "num_images": total,
+        }
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: Compute VLM compositional metrics
 # ---------------------------------------------------------------------------
 
 
@@ -228,6 +450,11 @@ def compute_experiment_metrics(
 def run_benchmark(config: BenchmarkConfig) -> None:
     """Orchestrate the full benchmark pipeline."""
     setup_logging(config.out_dir / "logs", rank=0)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
     if config.dry_run:
         logger.info("DRY RUN: benchmark pipeline")
@@ -255,20 +482,45 @@ def run_benchmark(config: BenchmarkConfig) -> None:
     else:
         logger.info("Skipping ranking (--skip_ranking)")
 
-    # Phase 4: Compute and report metrics
-    logger.info("=== Phase 4: Experiment metrics ===")
+    # Phase 4: Human preference metrics (baseline vs NPNet)
+    logger.info("=== Phase 4: Human preference metrics ===")
+    npnet_images_dir = config.out_dir / "golden_images"
+    baseline_images_dir = Path(config.baseline_images_dir) if config.baseline_images_dir else None
+
+    if baseline_images_dir and baseline_images_dir.exists():
+        hp_results = run_human_preference_eval(baseline_images_dir, npnet_images_dir, config)
+
+        hp_path = config.out_dir / "human_preference_metrics.json"
+        hp_path.write_text(json.dumps(hp_results, indent=2) + "\n")
+
+        logger.info("--- Human Preference: Baseline vs NPNet ---")
+        for metric, vals in hp_results.items():
+            logger.info(
+                "  %s: baseline=%.4f  npnet=%.4f  (%.2f%%)  win_rate=%.1f%%",
+                metric,
+                vals["baseline_mean"],
+                vals["npnet_mean"],
+                vals["improvement_pct"],
+                vals["npnet_win_rate"] * 100,
+            )
+    else:
+        logger.warning(
+            "Skipping human preference metrics: --baseline_images_dir not set or not found"
+        )
+
+    # Phase 5: Compute VLM compositional metrics
+    logger.info("=== Phase 5: VLM compositional metrics ===")
     ranking_dir = config.out_dir / "ranking"
     metrics = compute_experiment_metrics(ranking_dir)
 
-    # Save metrics
+    # Save all metrics
     metrics_path = config.out_dir / "experiment_metrics.json"
     metrics_path.write_text(json.dumps(metrics, indent=2) + "\n")
 
-    # Log summary
     for key, value in sorted(metrics.items()):
         if isinstance(value, float):
             logger.info("  %s: %.4f", key, value)
         else:
             logger.info("  %s: %s", key, value)
 
-    logger.info("Benchmark complete. Metrics saved to %s", metrics_path)
+    logger.info("Benchmark complete. Metrics saved to %s", config.out_dir)
