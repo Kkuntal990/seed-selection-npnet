@@ -1,4 +1,4 @@
-"""Tests for NoiseDataset: loading, manifest parsing, item retrieval."""
+"""Tests for NoiseDataset and InversionLocalDataset."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 import torch
 
-from npnet.dataset import DeltaNoiseDataset, NoiseDataset
+from npnet.dataset import InversionLocalDataset, NoiseDataset
 
 
 def _create_test_data(root: Path, manifest_path: Path) -> int:
@@ -102,61 +102,69 @@ class TestNoiseDataset:
         assert len(ds) == 0
 
 
-def _create_delta_test_data(root: Path) -> int:
-    """Create a small set of test .pt files for DeltaNoiseDataset.
-
-    Returns the number of samples created.
-    """
+def _create_inversion_local_test_data(root: Path) -> int:
+    """Create test .pt files for InversionLocalDataset."""
     count = 0
     for category in ("numeracy", "spatial"):
         for prompt_id in (0, 1):
-            for bad_seed, good_seed in ((0, 5), (1, 6)):
-                pt_dir = root / category / f"prompt_{prompt_id:04d}"
-                pt_dir.mkdir(parents=True, exist_ok=True)
-                pt_path = pt_dir / f"bad={bad_seed:03d}_good={good_seed:03d}.pt"
+            for seed in (0, 5):
+                for pert_idx in range(3):
+                    pt_dir = root / category / f"prompt_{prompt_id:04d}"
+                    pt_dir.mkdir(parents=True, exist_ok=True)
+                    pt_path = pt_dir / f"seed={seed:03d}_pert={pert_idx}.pt"
 
-                source = torch.randn(4, 128, 128)
-                delta = torch.randn(4, 128, 128)
-                torch.save(
-                    {
-                        "source_noise": source,
-                        "delta_noise": delta,
-                        "prompt_text": f"Test prompt {category} {prompt_id}",
-                        "bad_seed": bad_seed,
-                        "good_seed": good_seed,
-                        "prompt_id": prompt_id,
-                        "category": category,
-                        "delta_norm": delta.norm().item(),
-                    },
-                    pt_path,
-                )
-                count += 1
+                    target = torch.randn(4, 128, 128)
+                    epsilon = 0.05 * torch.randn(4, 128, 128)
+                    source = target + epsilon
+                    torch.save(
+                        {
+                            "source_noise": source,
+                            "target_noise": target,
+                            "prompt_text": f"Test prompt {category} {prompt_id}",
+                            "seed": seed,
+                            "prompt_id": prompt_id,
+                            "category": category,
+                            "perturbation_idx": pert_idx,
+                            "epsilon_norm": epsilon.norm().item(),
+                            "sigma": 0.05,
+                        },
+                        pt_path,
+                    )
+                    count += 1
     return count
 
 
-class TestDeltaNoiseDataset:
+class TestInversionLocalDataset:
     def test_len(self, tmp_path: Path) -> None:
-        n = _create_delta_test_data(tmp_path / "delta")
-        ds = DeltaNoiseDataset(tmp_path / "delta")
+        n = _create_inversion_local_test_data(tmp_path / "inv")
+        ds = InversionLocalDataset(tmp_path / "inv")
         assert len(ds) == n
 
     def test_getitem_types(self, tmp_path: Path) -> None:
-        _create_delta_test_data(tmp_path / "delta")
-        ds = DeltaNoiseDataset(tmp_path / "delta")
-        source, delta, text = ds[0]
+        _create_inversion_local_test_data(tmp_path / "inv")
+        ds = InversionLocalDataset(tmp_path / "inv")
+        source, target, text = ds[0]
         assert isinstance(source, torch.Tensor)
-        assert isinstance(delta, torch.Tensor)
+        assert isinstance(target, torch.Tensor)
         assert isinstance(text, str)
 
     def test_getitem_shapes(self, tmp_path: Path) -> None:
-        _create_delta_test_data(tmp_path / "delta")
-        ds = DeltaNoiseDataset(tmp_path / "delta")
-        source, delta, text = ds[0]
+        _create_inversion_local_test_data(tmp_path / "inv")
+        ds = InversionLocalDataset(tmp_path / "inv")
+        source, target, text = ds[0]
         assert source.shape == (4, 128, 128)
-        assert delta.shape == (4, 128, 128)
+        assert target.shape == (4, 128, 128)
+
+    def test_source_close_to_target(self, tmp_path: Path) -> None:
+        _create_inversion_local_test_data(tmp_path / "inv")
+        ds = InversionLocalDataset(tmp_path / "inv")
+        source, target, _ = ds[0]
+        # source = target + epsilon where epsilon is small
+        ratio = (source - target).norm() / target.norm()
+        assert ratio < 0.2  # perturbation should be small relative to target
 
     def test_empty_raises(self, tmp_path: Path) -> None:
         empty_dir = tmp_path / "empty"
         empty_dir.mkdir()
         with pytest.raises(FileNotFoundError):
-            DeltaNoiseDataset(empty_dir)
+            InversionLocalDataset(empty_dir)

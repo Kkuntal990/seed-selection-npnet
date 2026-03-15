@@ -30,30 +30,34 @@ def generate() -> None:
     run_golden_generation(config)
 
 
-def build_delta_noise() -> None:
-    """Build delta-noise training pairs from VLM rankings."""
-    from npnet.config import DeltaNoiseBuildConfig
-    from npnet.delta_noise import DeltaNoiseConfig, run_build_delta_pairs
+def build_inversion_local() -> None:
+    """Build inversion-local perturbation training pairs."""
+    from npnet.config import InversionLocalBuildConfig
+    from npnet.inversion_local import InversionLocalConfig, run_build_inversion_local_pairs
 
-    cli_cfg = DeltaNoiseBuildConfig()  # type: ignore[call-arg]
-    config = DeltaNoiseConfig(
+    cli_cfg = InversionLocalBuildConfig()  # type: ignore[call-arg]
+    config = InversionLocalConfig(
         ranking_dir=cli_cfg.ranking_dir,
         out_dir=cli_cfg.out_dir,
         categories=cli_cfg.categories,
         min_accuracy=cli_cfg.min_accuracy,
         max_accuracy=cli_cfg.max_accuracy,
-        num_good_seeds=cli_cfg.num_good_seeds,
-        num_bad_seeds=cli_cfg.num_bad_seeds,
-        latent_shape=(
-            cli_cfg.latent_channels,
-            cli_cfg.latent_resolution,
-            cli_cfg.latent_resolution,
-        ),
+        top_k=cli_cfg.top_k,
+        num_perturbations=cli_cfg.num_perturbations,
+        perturbation_sigma=cli_cfg.perturbation_sigma,
+        model_id=cli_cfg.model_id,
+        num_inference_steps=cli_cfg.num_inference_steps,
+        num_inversion_steps=cli_cfg.num_inversion_steps,
+        guidance_scale=cli_cfg.guidance_scale,
+        inversion_guidance_scale=cli_cfg.inversion_guidance_scale,
+        height=cli_cfg.height,
+        width=cli_cfg.width,
         train_frac=cli_cfg.train_frac,
         val_frac=cli_cfg.val_frac,
         seed=cli_cfg.seed,
+        enable_cpu_offload=cli_cfg.enable_cpu_offload,
     )
-    run_build_delta_pairs(config)
+    run_build_inversion_local_pairs(config)
 
 
 def benchmark() -> None:
@@ -65,10 +69,10 @@ def benchmark() -> None:
     run_benchmark(config)
 
 
-def analyze_delta() -> None:
-    """Analyze delta-noise dataset statistics."""
-    from npnet.config import DeltaDiagnosticsConfig
-    from npnet.delta_diagnostics import run_diagnostics
+def analyze_inversion_local() -> None:
+    """Analyze inversion-local dataset statistics."""
+    from npnet.config import InversionLocalDiagnosticsConfig
+    from npnet.inversion_local_diagnostics import run_diagnostics
 
-    config = DeltaDiagnosticsConfig()  # type: ignore[call-arg]
+    config = InversionLocalDiagnosticsConfig()  # type: ignore[call-arg]
     run_diagnostics(config)

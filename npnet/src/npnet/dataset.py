@@ -57,12 +57,12 @@ class NoiseDataset(Dataset[tuple[torch.Tensor, torch.Tensor, str]]):
         return source, target, prompt_text
 
 
-class DeltaNoiseDataset(Dataset[tuple[torch.Tensor, torch.Tensor, str]]):
-    """Load delta-noise pairs from ``.pt`` files.
+class InversionLocalDataset(Dataset[tuple[torch.Tensor, torch.Tensor, str]]):
+    """Load inversion-local perturbation pairs from ``.pt`` files.
 
-    Each ``.pt`` file contains ``source_noise``, ``delta_noise``, and
-    ``prompt_text``.  Returns ``(source_noise, delta_noise, prompt_text)``
-    so the training loop can compute loss on the delta directly.
+    Each ``.pt`` file contains ``source_noise`` (z* + ε), ``target_noise``
+    (z*), and ``prompt_text``.  Returns the same 3-tuple as
+    :class:`NoiseDataset` so the training loop is unchanged.
     """
 
     def __init__(self, dataset_dir: Path) -> None:
@@ -75,4 +75,4 @@ class DeltaNoiseDataset(Dataset[tuple[torch.Tensor, torch.Tensor, str]]):
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, str]:
         data = torch.load(self.samples[idx], map_location="cpu", weights_only=True)
-        return data["source_noise"], data["delta_noise"], data["prompt_text"]
+        return data["source_noise"], data["target_noise"], data["prompt_text"]

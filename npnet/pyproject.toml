@@ -35,9 +35,9 @@ dev = [
 npnet-collect = "npnet.cli:collect"
 npnet-train = "npnet.cli:train"
 npnet-generate = "npnet.cli:generate"
-npnet-build-delta = "npnet.cli:build_delta_noise"
+npnet-build-local = "npnet.cli:build_inversion_local"
 npnet-benchmark = "npnet.cli:benchmark"
-npnet-analyze-delta = "npnet.cli:analyze_delta"
+npnet-analyze-local = "npnet.cli:analyze_inversion_local"
 
 [build-system]
 requires = ["hatchling"]

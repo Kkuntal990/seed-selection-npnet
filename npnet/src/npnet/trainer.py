@@ -13,7 +13,7 @@ from diffusers import StableDiffusionXLPipeline
 from seed_mining.logging_utils import setup_logging
 from torch.utils.data import DataLoader, random_split
 
-from npnet.dataset import DeltaNoiseDataset, NoiseDataset
+from npnet.dataset import InversionLocalDataset, NoiseDataset
 from npnet.models.npnet import NPNet
 
 if TYPE_CHECKING:
@@ -52,33 +52,13 @@ def residual_loss(
     return cos_loss + l1_loss + 0.1 * mse_loss
 
 
-def delta_loss(
-    predicted_delta: torch.Tensor,
-    target_delta: torch.Tensor,
-) -> torch.Tensor:
-    """Loss on predicted vs true delta correction vector.
-
-    Combines:
-    - Cosine similarity on flattened deltas (directional alignment)
-    - L1 loss on deltas (magnitude matching)
-    - MSE loss on deltas (reconstruction fidelity, weighted 0.1x)
-    """
-    cos_loss = 1.0 - F.cosine_similarity(predicted_delta.flatten(1), target_delta.flatten(1)).mean()
-
-    l1_loss = F.l1_loss(predicted_delta, target_delta)
-
-    mse_loss = F.mse_loss(predicted_delta, target_delta)
-
-    return cos_loss + l1_loss + 0.1 * mse_loss
-
-
 def build_dataloaders(config: TrainingConfig) -> tuple[DataLoader, DataLoader]:  # type: ignore[type-arg]
     """Build train and validation data loaders."""
-    if config.dataset_type == "delta_noise":
-        assert config.delta_noise_dir is not None
-        train_ds = DeltaNoiseDataset(config.delta_noise_dir / "train")
-        val_ds = DeltaNoiseDataset(config.delta_noise_dir / "val")
-        logger.info("Loaded delta_noise dataset: train=%d, val=%d", len(train_ds), len(val_ds))
+    if config.dataset_type == "inversion_local":
+        assert config.dataset_dir is not None
+        train_ds = InversionLocalDataset(config.dataset_dir / "train")
+        val_ds = InversionLocalDataset(config.dataset_dir / "val")
+        logger.info("Loaded inversion_local dataset: train=%d, val=%d", len(train_ds), len(val_ds))
     else:
         assert config.noise_pairs_dir is not None
         assert config.prompt_manifest_path is not None
@@ -192,15 +172,12 @@ def run_training(config: TrainingConfig) -> None:
     log_every = max(1, total_train_steps // 10)
     global_step = 0
 
-    is_delta = config.dataset_type == "delta_noise"
-    loss_name = "delta(cosine+L1+MSE)" if is_delta else "residual(cosine+L1+MSE)"
     logger.info(
         "Training on %d GPU(s), batch_size=%d, effective_batch=%d, "
-        "loss=%s, warmup=%d steps, early_stop=%d epochs",
+        "loss=residual(cosine+L1+MSE), warmup=%d steps, early_stop=%d epochs",
         accelerator.num_processes,
         config.batch_size,
         config.batch_size * accelerator.num_processes * config.grad_accumulation_steps,
-        loss_name,
         warmup_steps,
         config.early_stopping_patience,
     )
@@ -220,14 +197,8 @@ def run_training(config: TrainingConfig) -> None:
                         device=device,
                     )
 
-                npnet_output = npnet(source_noise, prompt_embeds)
-
-                if is_delta:
-                    # NPNet output IS the predicted delta
-                    loss = delta_loss(npnet_output, target)
-                else:
-                    # NPNet output is full golden noise
-                    loss = residual_loss(npnet_output, source_noise, target)
+                golden_noise = npnet(source_noise, prompt_embeds)
+                loss = residual_loss(golden_noise, source_noise, target)
 
                 accelerator.backward(loss)
                 optimizer.step()
@@ -265,12 +236,8 @@ def run_training(config: TrainingConfig) -> None:
                     device=device,
                 )
 
-                npnet_output = npnet(source_noise, prompt_embeds)
-
-                if is_delta:
-                    loss = delta_loss(npnet_output, target)
-                else:
-                    loss = residual_loss(npnet_output, source_noise, target)
+                golden_noise = npnet(source_noise, prompt_embeds)
+                loss = residual_loss(golden_noise, source_noise, target)
 
                 val_loss_sum += loss.item() * len(source_noise)
                 val_count += len(source_noise)

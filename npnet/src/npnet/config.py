@@ -84,10 +84,11 @@ class TrainingConfig(BaseSettings):
         default=None, description="JSONL file mapping prompt_id to text (required for ddim)"
     )
     dataset_type: str = Field(
-        default="ddim", description="Dataset type: 'ddim' (original .npz) or 'delta_noise' (.pt)"
+        default="ddim",
+        description="Dataset type: 'ddim' (original .npz) or 'inversion_local' (.pt)",
     )
-    delta_noise_dir: Path | None = Field(
-        default=None, description="Delta-noise dataset dir (required for delta_noise)"
+    dataset_dir: Path | None = Field(
+        default=None, description="Dataset dir with train/val splits (required for inversion_local)"
     )
 
     # --- Architecture ---
@@ -124,12 +125,12 @@ class TrainingConfig(BaseSettings):
                     "--noise_pairs_dir and --prompt_manifest_path are required "
                     "when --dataset_type=ddim"
                 )
-        elif self.dataset_type == "delta_noise":
-            if self.delta_noise_dir is None:
-                raise ValueError("--delta_noise_dir is required when --dataset_type=delta_noise")
+        elif self.dataset_type == "inversion_local":
+            if self.dataset_dir is None:
+                raise ValueError("--dataset_dir is required when --dataset_type=inversion_local")
         else:
             raise ValueError(
-                f"dataset_type must be 'ddim' or 'delta_noise', got '{self.dataset_type}'"
+                f"dataset_type must be 'ddim' or 'inversion_local', got '{self.dataset_type}'"
             )
         return self
 
@@ -179,8 +180,8 @@ class InferenceConfig(BaseSettings):
 
     # --- Inference mode ---
     inference_mode: str = Field(
-        default="delta",
-        description="'delta' applies z + NPNet(z), 'replacement' uses NPNet(z) directly",
+        default="replacement",
+        description="'replacement' uses NPNet(z) directly, 'delta' applies z + NPNet(z)",
     )
 
     # --- Output ---
@@ -225,26 +226,33 @@ class InferenceConfig(BaseSettings):
         )
 
 
-class DeltaNoiseBuildConfig(BaseSettings):
-    """Configuration for building delta-noise training pairs."""
+class InversionLocalBuildConfig(BaseSettings):
+    """Configuration for building inversion-local perturbation pairs."""
 
-    model_config = {"env_prefix": "NPDN_", "cli_parse_args": True}
+    model_config = {"env_prefix": "NPIL_", "cli_parse_args": True}
 
     ranking_dir: Path = Field(description="VLM ranking output directory")
     out_dir: Path = Field(
-        default=Path("data/delta_noise"),
+        default=Path("data/inversion_local"),
         description="Output directory for .pt pair files",
     )
     categories: list[str] = Field(default=["numeracy", "spatial"])
     min_accuracy: float = 0.10
     max_accuracy: float = 0.90
-    num_good_seeds: int = 3
-    num_bad_seeds: int = 3
-    latent_channels: int = 4
-    latent_resolution: int = 128
+    top_k: int = 3
+    num_perturbations: int = 5
+    perturbation_sigma: float = 0.05
+    model_id: str = "stabilityai/stable-diffusion-xl-base-1.0"
+    num_inference_steps: int = 50
+    num_inversion_steps: int = 10
+    guidance_scale: float = 5.5
+    inversion_guidance_scale: float = 1.0
+    height: int = 1024
+    width: int = 1024
     train_frac: float = 0.8
     val_frac: float = 0.1
     seed: int = 42
+    enable_cpu_offload: bool = True
 
     @classmethod
     def settings_customise_sources(
@@ -262,12 +270,12 @@ class DeltaNoiseBuildConfig(BaseSettings):
         )
 
 
-class DeltaDiagnosticsConfig(BaseSettings):
-    """Configuration for delta-noise dataset analysis."""
+class InversionLocalDiagnosticsConfig(BaseSettings):
+    """Configuration for inversion-local dataset analysis."""
 
     model_config = {"env_prefix": "NPDIAG_", "cli_parse_args": True}
 
-    dataset_dir: Path = Field(description="Delta-noise dataset directory")
+    dataset_dir: Path = Field(description="Inversion-local dataset directory")
     output_dir: Path = Field(
         default=Path("diagnostics_output"),
         description="Output directory for reports",
@@ -325,8 +333,8 @@ class BenchmarkConfig(BaseSettings):
 
     # --- Inference mode ---
     inference_mode: str = Field(
-        default="delta",
-        description="'delta' applies z + NPNet(z), 'replacement' uses NPNet(z) directly",
+        default="replacement",
+        description="'replacement' uses NPNet(z) directly, 'delta' applies z + NPNet(z)",
     )
 
     # --- Baseline comparison ---
