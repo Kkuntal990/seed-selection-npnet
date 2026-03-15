@@ -245,7 +245,7 @@ def build_perturbation_pairs(
     """
     pairs: list[dict[str, Any]] = []
     for i in range(num_perturbations):
-        epsilon = sigma * torch.randn_like(z_star, generator=rng)
+        epsilon = sigma * torch.randn(z_star.shape, generator=rng, dtype=z_star.dtype)
         source = z_star + epsilon
         epsilon_norm = torch.norm(epsilon, p=2).item()
 
