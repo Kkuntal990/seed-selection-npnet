@@ -10,8 +10,9 @@ import torch
 import torch.nn.functional as F
 from accelerate import Accelerator
 from diffusers import StableDiffusionXLPipeline
+from tqdm import tqdm
 from seed_mining.logging_utils import setup_logging
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Dataset, random_split
 
 from npnet.dataset import InversionLocalDataset, NoiseDataset
 from npnet.models.npnet import NPNet
@@ -52,8 +53,56 @@ def residual_loss(
     return cos_loss + l1_loss + 0.1 * mse_loss
 
 
-def build_dataloaders(config: TrainingConfig) -> tuple[DataLoader, DataLoader]:  # type: ignore[type-arg]
-    """Build train and validation data loaders."""
+class PrecomputedEmbedDataset(Dataset[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]):
+    """Wraps a noise dataset, replacing prompt strings with pre-computed embeddings."""
+
+    def __init__(
+        self,
+        base_dataset: Dataset[tuple[torch.Tensor, torch.Tensor, str]],
+        embed_cache: dict[str, torch.Tensor],
+    ) -> None:
+        self.base = base_dataset
+        self.cache = embed_cache
+
+    def __len__(self) -> int:
+        return len(self.base)  # type: ignore[arg-type]
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        source, target, prompt = self.base[idx]
+        return source, target, self.cache[prompt]
+
+
+def precompute_prompt_embeddings(
+    pipe: StableDiffusionXLPipeline,
+    datasets: list[Dataset[tuple[torch.Tensor, torch.Tensor, str]]],
+    device: torch.device,
+    batch_size: int = 64,
+) -> dict[str, torch.Tensor]:
+    """Encode all unique prompts once and return a {prompt_text: embedding} dict."""
+    unique_prompts: set[str] = set()
+    for ds in datasets:
+        for i in range(len(ds)):  # type: ignore[arg-type]
+            _, _, prompt = ds[i]
+            unique_prompts.add(prompt)
+
+    logger.info("Pre-computing embeddings for %d unique prompts ...", len(unique_prompts))
+    prompt_list = sorted(unique_prompts)
+    cache: dict[str, torch.Tensor] = {}
+
+    num_batches = (len(prompt_list) + batch_size - 1) // batch_size
+    with torch.no_grad():
+        for i in tqdm(range(0, len(prompt_list), batch_size), total=num_batches, desc="Encoding prompts"):
+            batch = prompt_list[i : i + batch_size]
+            embeds, _, _, _ = pipe.encode_prompt(prompt=batch, device=device)
+            for j, p in enumerate(batch):
+                cache[p] = embeds[j].cpu()
+
+    logger.info("Prompt embedding cache ready (%d entries)", len(cache))
+    return cache
+
+
+def build_datasets(config: TrainingConfig) -> tuple[Dataset, Dataset]:
+    """Build train and validation datasets (without dataloaders)."""
     if config.dataset_type == "inversion_local":
         assert config.dataset_dir is not None
         train_ds = InversionLocalDataset(config.dataset_dir / "train")
@@ -69,23 +118,7 @@ def build_dataloaders(config: TrainingConfig) -> tuple[DataLoader, DataLoader]: 
         train_ds, val_ds = random_split(  # type: ignore[assignment]
             dataset, [train_size, val_size], generator=generator
         )
-
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=config.batch_size,
-        shuffle=True,
-        num_workers=config.num_workers,
-        pin_memory=True,
-        drop_last=True,
-    )
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=config.batch_size,
-        shuffle=False,
-        num_workers=config.num_workers,
-        pin_memory=True,
-    )
-    return train_loader, val_loader
+    return train_ds, val_ds
 
 
 def run_training(config: TrainingConfig) -> None:
@@ -115,10 +148,9 @@ def run_training(config: TrainingConfig) -> None:
 
     # Data
     logger.info("Loading dataset (type=%s) ...", config.dataset_type)
-    train_loader, val_loader = build_dataloaders(config)
-    logger.info("Train: %d batches, Val: %d batches", len(train_loader), len(val_loader))
+    train_ds, val_ds = build_datasets(config)
 
-    # SDXL pipeline (frozen, only for encode_prompt — loaded on each GPU)
+    # SDXL pipeline (frozen, only for encode_prompt — pre-compute then discard)
     logger.info("Loading SDXL pipeline for prompt encoding: %s ...", config.model_id)
     pipe = StableDiffusionXLPipeline.from_pretrained(
         config.model_id,
@@ -126,11 +158,28 @@ def run_training(config: TrainingConfig) -> None:
         variant="fp16",
         use_safetensors=True,
     )
-    if config.enable_cpu_offload:
-        gpu_id = device.index if device.index is not None else 0
-        pipe.enable_model_cpu_offload(gpu_id=gpu_id)
-    else:
-        pipe.to(device)
+    pipe.to(device)
+
+    # Pre-compute all prompt embeddings and wrap datasets
+    embed_cache = precompute_prompt_embeddings(pipe, [train_ds, val_ds], device)
+    train_ds = PrecomputedEmbedDataset(train_ds, embed_cache)
+    val_ds = PrecomputedEmbedDataset(val_ds, embed_cache)
+
+    # Rebuild dataloaders with embedded datasets
+    train_loader = DataLoader(
+        train_ds, batch_size=config.batch_size, shuffle=True,
+        num_workers=config.num_workers, pin_memory=True, drop_last=True,
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=config.batch_size, shuffle=False,
+        num_workers=config.num_workers, pin_memory=True,
+    )
+
+    # Free SDXL pipeline memory
+    del pipe
+    torch.cuda.empty_cache()
+    logger.info("SDXL pipeline unloaded, VRAM freed for training")
+    logger.info("Train: %d batches, Val: %d batches", len(train_loader), len(val_loader))
 
     # NPNet
     npnet = NPNet(
@@ -188,15 +237,9 @@ def run_training(config: TrainingConfig) -> None:
         train_loss_sum = 0.0
         train_steps = 0
 
-        for step, (source_noise, target, prompts) in enumerate(train_loader, 1):
+        for step, (source_noise, target, prompt_embeds) in enumerate(train_loader, 1):
             with accelerator.accumulate(npnet):
-                # Encode prompts with frozen SDXL text encoders
-                with torch.no_grad():
-                    prompt_embeds, _, _, _ = pipe.encode_prompt(
-                        prompt=list(prompts),
-                        device=device,
-                    )
-
+                prompt_embeds = prompt_embeds.to(device)
                 golden_noise = npnet(source_noise, prompt_embeds)
                 loss = residual_loss(golden_noise, source_noise, target)
 
@@ -230,12 +273,8 @@ def run_training(config: TrainingConfig) -> None:
         val_count = 0
 
         with torch.no_grad():
-            for source_noise, target, prompts in val_loader:
-                prompt_embeds, _, _, _ = pipe.encode_prompt(
-                    prompt=list(prompts),
-                    device=device,
-                )
-
+            for source_noise, target, prompt_embeds in val_loader:
+                prompt_embeds = prompt_embeds.to(device)
                 golden_noise = npnet(source_noise, prompt_embeds)
                 loss = residual_loss(golden_noise, source_noise, target)
 
