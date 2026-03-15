@@ -202,23 +202,31 @@ def invert_golden_seed(
         latents=source_noise,
     ).images[0]
 
-    # Encode image to latent space
-    image_tensor = pipe.image_processor.preprocess(image).to(device, dtype=dtype)
+    # Cast VAE and UNet to float32 to avoid fp16 NaN during inversion
+    pipe.vae = pipe.vae.float()
+    pipe.unet = pipe.unet.float()
+
+    # Encode image to latent space (fp32)
+    image_tensor = pipe.image_processor.preprocess(image).to(device, dtype=torch.float32)
     with torch.no_grad():
         z_0 = pipe.vae.encode(image_tensor).latent_dist.sample()
         z_0 = z_0 * pipe.vae.config.scaling_factor
 
-    # DDIM inversion: z_0 → z* (golden noise)
+    # DDIM inversion: z_0 → z* (golden noise, fp32)
     z_star = _ddim_invert(
         pipe,
         z_0,
-        prompt_embeds,
-        negative_prompt_embeds,
-        pooled_prompt_embeds,
-        negative_pooled_prompt_embeds,
+        prompt_embeds.float(),
+        negative_prompt_embeds.float(),
+        pooled_prompt_embeds.float(),
+        negative_pooled_prompt_embeds.float(),
         num_steps=num_inversion_steps,
         guidance_scale=inversion_guidance_scale,
     )
+
+    # Restore fp16 for next image generation
+    pipe.vae = pipe.vae.half()
+    pipe.unet = pipe.unet.half()
 
     return z_star.squeeze(0).float()  # (4, H/8, W/8)
 
@@ -324,6 +332,7 @@ def run_build_inversion_local_pairs(config: InversionLocalConfig) -> None:
     pipe.to("cuda")
 
     total_pairs = 0
+    skipped_non_finite = 0
 
     # Clear existing manifests
     for split_name in ("train", "val", "test"):
@@ -453,6 +462,16 @@ def run_build_inversion_local_pairs(config: InversionLocalConfig) -> None:
                         height=config.height,
                         width=config.width,
                     )
+                    if not torch.isfinite(z_star).all():
+                        skipped_non_finite += 1
+                        logger.warning(
+                            "[%s/%s] Non-finite z_star for prompt=%d seed=%d, skipping",
+                            category,
+                            split_name,
+                            pid,
+                            golden_seed,
+                        )
+                        continue
 
                     # Generate perturbation pairs
                     pairs = build_perturbation_pairs(
@@ -467,6 +486,20 @@ def run_build_inversion_local_pairs(config: InversionLocalConfig) -> None:
                     )
 
                     for pair_data in pairs:
+                        if not (
+                            torch.isfinite(pair_data["source_noise"]).all()
+                            and torch.isfinite(pair_data["target_noise"]).all()
+                        ):
+                            skipped_non_finite += 1
+                            logger.warning(
+                                "[%s/%s] Non-finite pair for prompt=%d seed=%d pert=%d, skipping",
+                                category,
+                                split_name,
+                                pid,
+                                golden_seed,
+                                pair_data["perturbation_idx"],
+                            )
+                            continue
                         pi = pair_data["perturbation_idx"]
                         rel_path = (
                             f"{category}/prompt_{pid:04d}/seed={golden_seed:03d}_pert={pi}.pt"
@@ -496,4 +529,8 @@ def run_build_inversion_local_pairs(config: InversionLocalConfig) -> None:
             total_pairs += len(manifest_records)
             logger.info("[%s/%s] Wrote %d pairs", category, split_name, len(manifest_records))
 
-    logger.info("Done. Total pairs: %d", total_pairs)
+    logger.info(
+        "Done. Total pairs: %d (skipped_non_finite=%d)",
+        total_pairs,
+        skipped_non_finite,
+    )

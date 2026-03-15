@@ -134,6 +134,20 @@ def build_datasets(config: TrainingConfig) -> tuple[Dataset, Dataset]:
     return train_ds, val_ds
 
 
+def validate_finite_samples(dataset: Dataset, name: str, max_checks: int = 256) -> None:
+    """Fail fast if a dataset contains NaN/Inf tensors.
+
+    Scans only a prefix of the dataset to keep startup cost bounded.
+    """
+    checks = min(len(dataset), max_checks)  # type: ignore[arg-type]
+    for idx in range(checks):
+        source, target, _ = dataset[idx]
+        if not torch.isfinite(source).all():
+            raise ValueError(f"{name}[{idx}] source_noise contains NaN/Inf")
+        if not torch.isfinite(target).all():
+            raise ValueError(f"{name}[{idx}] target_noise contains NaN/Inf")
+
+
 def run_training(config: TrainingConfig) -> None:
     """Train NPNet on collected noise pairs.
 
@@ -166,6 +180,8 @@ def run_training(config: TrainingConfig) -> None:
     # Data
     logger.info("Loading dataset (type=%s) ...", config.dataset_type)
     train_ds, val_ds = build_datasets(config)
+    validate_finite_samples(train_ds, "train")
+    validate_finite_samples(val_ds, "val")
 
     # SDXL pipeline (frozen, only for encode_prompt — pre-compute then discard)
     logger.info("Loading SDXL pipeline for prompt encoding: %s ...", config.model_id)
@@ -258,45 +274,19 @@ def run_training(config: TrainingConfig) -> None:
         train_steps = 0
 
         for step, (source_noise, target, prompt_embeds) in enumerate(train_loader, 1):
-            if step == 1 and epoch == 1:
-                print(f"[rank {accelerator.process_index}] First batch: source={source_noise.shape} target={target.shape} embeds={prompt_embeds.shape}", flush=True)
             with accelerator.accumulate(npnet):
-                if step == 1 and epoch == 1:
-                    torch.cuda.synchronize(device)
-                    t0 = time.perf_counter()
-                    print(f"[rank {accelerator.process_index}] Step 1: starting forward", flush=True)
                 prompt_embeds = prompt_embeds.to(device)
                 golden_noise = npnet(source_noise, prompt_embeds)
-                if step == 1 and epoch == 1:
-                    torch.cuda.synchronize(device)
-                    print(
-                        f"[rank {accelerator.process_index}] Step 1: forward done in {time.perf_counter() - t0:.2f}s",
-                        flush=True,
-                    )
                 loss = residual_loss(golden_noise, source_noise, target)
 
                 accelerator.backward(loss)
-                if step == 1 and epoch == 1:
-                    torch.cuda.synchronize(device)
-                    print(
-                        f"[rank {accelerator.process_index}] Step 1: backward done in {time.perf_counter() - t0:.2f}s",
-                        flush=True,
-                    )
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
-                if step == 1 and epoch == 1:
-                    torch.cuda.synchronize(device)
-                    print(
-                        f"[rank {accelerator.process_index}] Step 1: optimizer done in {time.perf_counter() - t0:.2f}s",
-                        flush=True,
-                    )
 
             global_step += 1
             train_loss_sum += loss.item()
             train_steps += 1
-            if step == 1 and epoch == 1:
-                print(f"[rank {accelerator.process_index}] Step 1 done, loss={loss.item():.4f}", flush=True)
 
             if is_main and (step % log_every == 0 or step == 1):
                 avg_so_far = train_loss_sum / train_steps
