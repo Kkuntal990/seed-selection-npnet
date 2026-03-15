@@ -83,11 +83,19 @@ def precompute_prompt_embeddings(
     import json
 
     unique_prompts: set[str] = set()
+    # Read one .pt per unique (category, prompt_id) to get prompt texts
+    seen: set[tuple[str, int]] = set()
     for manifest in dataset_dir.rglob("manifest.jsonl"):
         for line in manifest.read_text().splitlines():
-            if line.strip():
-                rec = json.loads(line)
-                unique_prompts.add(rec["prompt_text"])
+            if not line.strip():
+                continue
+            rec = json.loads(line)
+            key = (rec["category"], rec["prompt_id"])
+            if key not in seen:
+                seen.add(key)
+                pt_path = manifest.parent / rec["path"]
+                data = torch.load(pt_path, map_location="cpu", weights_only=True)
+                unique_prompts.add(data["prompt_text"])
 
     logger.info("Pre-computing embeddings for %d unique prompts ...", len(unique_prompts))
     prompt_list = sorted(unique_prompts)
