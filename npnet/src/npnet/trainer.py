@@ -150,13 +150,17 @@ def run_training(config: TrainingConfig) -> None:
     is_main = accelerator.is_main_process
     device = accelerator.device
 
+    # Force unbuffered logging so progress is visible immediately
+    import sys
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s: %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stdout,
+        force=True,
+    )
     if is_main:
         setup_logging(config.checkpoint_dir / "logs", rank=0)
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s %(name)s %(levelname)s: %(message)s",
-            datefmt="%H:%M:%S",
-        )
 
     # Data
     logger.info("Loading dataset (type=%s) ...", config.dataset_type)
@@ -170,9 +174,12 @@ def run_training(config: TrainingConfig) -> None:
         variant="fp16",
         use_safetensors=True,
     )
+    logger.info("Moving SDXL to %s ...", device)
     pipe.to(device)
+    logger.info("SDXL ready on %s", device)
 
     # Pre-compute all prompt embeddings and wrap datasets
+    logger.info("Collecting unique prompts from manifests ...")
     embed_cache = precompute_prompt_embeddings(pipe, config.dataset_dir, device)
     train_ds = PrecomputedEmbedDataset(train_ds, embed_cache)
     val_ds = PrecomputedEmbedDataset(val_ds, embed_cache)
