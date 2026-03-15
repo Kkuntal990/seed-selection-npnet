@@ -1,8 +1,9 @@
-"""NPNet training loop: MSE loss between predicted golden noise and target."""
+"""NPNet training loop with residual + directional loss."""
 
 from __future__ import annotations
 
 import logging
+import math
 from typing import TYPE_CHECKING
 
 import torch
@@ -19,6 +20,38 @@ if TYPE_CHECKING:
     from npnet.config import TrainingConfig
 
 logger = logging.getLogger("npnet.trainer")
+
+
+def residual_loss(
+    predicted: torch.Tensor,
+    source: torch.Tensor,
+    target: torch.Tensor,
+) -> torch.Tensor:
+    """Compute loss on the transport delta, not full reconstruction.
+
+    Combines:
+    - Cosine similarity on flattened deltas (directional alignment, scale-invariant)
+    - L1 loss on deltas (sparse gradients, better than MSE for weak signals)
+    - MSE loss on full output (reconstruction fidelity)
+
+    This gives meaningful gradients even when source/target are both ~N(0,1)
+    and nearly equidistant in high dimensions.
+    """
+    delta_pred = predicted - source.float()
+    delta_true = target.float() - source.float()
+
+    # Directional loss: are we moving in the right direction?
+    cos_loss = 1.0 - F.cosine_similarity(
+        delta_pred.flatten(1), delta_true.flatten(1)
+    ).mean()
+
+    # Magnitude loss: are we moving the right amount?
+    l1_loss = F.l1_loss(delta_pred, delta_true)
+
+    # Reconstruction loss: does the output match the target?
+    mse_loss = F.mse_loss(predicted, target.float())
+
+    return cos_loss + l1_loss + 0.1 * mse_loss
 
 
 def build_dataloaders(config: TrainingConfig) -> tuple[DataLoader, DataLoader]:  # type: ignore[type-arg]
@@ -113,12 +146,24 @@ def run_training(config: TrainingConfig) -> None:
     if config.pretrained_path is not None:
         npnet.load_checkpoint(config.pretrained_path)
 
-    # Optimizer
+    # Optimizer + cosine LR scheduler with warmup
     optimizer = torch.optim.AdamW(npnet.parameters(), lr=config.lr)
 
+    total_train_steps_per_epoch = len(train_loader)
+    total_steps = total_train_steps_per_epoch * config.epochs
+    warmup_steps = min(total_steps // 20, 100)  # 5% warmup, max 100 steps
+
+    def lr_lambda(step: int) -> float:
+        if step < warmup_steps:
+            return step / max(warmup_steps, 1)
+        progress = (step - warmup_steps) / max(total_steps - warmup_steps, 1)
+        return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
     # Prepare with accelerator (handles DDP wrapping, device placement, data sharding)
-    npnet, optimizer, train_loader, val_loader = accelerator.prepare(
-        npnet, optimizer, train_loader, val_loader
+    npnet, optimizer, train_loader, val_loader, scheduler = accelerator.prepare(
+        npnet, optimizer, train_loader, val_loader, scheduler
     )
 
     best_val_loss = float("inf")
@@ -127,12 +172,15 @@ def run_training(config: TrainingConfig) -> None:
 
     total_train_steps = len(train_loader)
     log_every = max(1, total_train_steps // 10)
+    global_step = 0
 
     logger.info(
-        "Training on %d GPU(s), batch_size=%d, effective_batch=%d",
+        "Training on %d GPU(s), batch_size=%d, effective_batch=%d, "
+        "loss=residual(cosine+L1+MSE), warmup=%d steps",
         accelerator.num_processes,
         config.batch_size,
         config.batch_size * accelerator.num_processes * config.grad_accumulation_steps,
+        warmup_steps,
     )
 
     for epoch in range(1, config.epochs + 1):
@@ -151,20 +199,23 @@ def run_training(config: TrainingConfig) -> None:
                     )
 
                 golden_noise = npnet(source_noise, prompt_embeds)
-                loss = F.mse_loss(golden_noise, target_noise.float())
+                loss = residual_loss(golden_noise, source_noise, target_noise)
 
                 accelerator.backward(loss)
                 optimizer.step()
+                scheduler.step()
                 optimizer.zero_grad()
 
+            global_step += 1
             train_loss_sum += loss.item()
             train_steps += 1
 
             if is_main and (step % log_every == 0 or step == 1):
                 avg_so_far = train_loss_sum / train_steps
+                current_lr = scheduler.get_last_lr()[0]
                 logger.info(
-                    "Epoch %d/%d [step %d/%d] loss=%.6f",
-                    epoch, config.epochs, step, total_train_steps, avg_so_far,
+                    "Epoch %d/%d [step %d/%d] loss=%.6f lr=%.2e",
+                    epoch, config.epochs, step, total_train_steps, avg_so_far, current_lr,
                 )
 
         avg_train_loss = train_loss_sum / max(train_steps, 1)
@@ -182,7 +233,7 @@ def run_training(config: TrainingConfig) -> None:
                 )
 
                 golden_noise = npnet(source_noise, prompt_embeds)
-                loss = F.mse_loss(golden_noise, target_noise.float())
+                loss = residual_loss(golden_noise, source_noise, target_noise)
 
                 val_loss_sum += loss.item() * len(source_noise)
                 val_count += len(source_noise)
