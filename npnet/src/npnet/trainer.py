@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -141,7 +142,7 @@ def run_training(config: TrainingConfig) -> None:
     # Accelerator handles device placement, DDP, mixed precision
     from accelerate import DistributedDataParallelKwargs
 
-    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
     accelerator = Accelerator(
         gradient_accumulation_steps=config.grad_accumulation_steps,
         kwargs_handlers=[ddp_kwargs],
@@ -260,14 +261,36 @@ def run_training(config: TrainingConfig) -> None:
             if step == 1 and epoch == 1:
                 print(f"[rank {accelerator.process_index}] First batch: source={source_noise.shape} target={target.shape} embeds={prompt_embeds.shape}", flush=True)
             with accelerator.accumulate(npnet):
+                if step == 1 and epoch == 1:
+                    torch.cuda.synchronize(device)
+                    t0 = time.perf_counter()
+                    print(f"[rank {accelerator.process_index}] Step 1: starting forward", flush=True)
                 prompt_embeds = prompt_embeds.to(device)
                 golden_noise = npnet(source_noise, prompt_embeds)
+                if step == 1 and epoch == 1:
+                    torch.cuda.synchronize(device)
+                    print(
+                        f"[rank {accelerator.process_index}] Step 1: forward done in {time.perf_counter() - t0:.2f}s",
+                        flush=True,
+                    )
                 loss = residual_loss(golden_noise, source_noise, target)
 
                 accelerator.backward(loss)
+                if step == 1 and epoch == 1:
+                    torch.cuda.synchronize(device)
+                    print(
+                        f"[rank {accelerator.process_index}] Step 1: backward done in {time.perf_counter() - t0:.2f}s",
+                        flush=True,
+                    )
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
+                if step == 1 and epoch == 1:
+                    torch.cuda.synchronize(device)
+                    print(
+                        f"[rank {accelerator.process_index}] Step 1: optimizer done in {time.perf_counter() - t0:.2f}s",
+                        flush=True,
+                    )
 
             global_step += 1
             train_loss_sum += loss.item()
