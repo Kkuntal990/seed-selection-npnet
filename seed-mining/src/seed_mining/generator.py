@@ -65,6 +65,12 @@ def _is_sd3_pipeline(pipe: DiffusionPipeline) -> bool:
     return "StableDiffusion3" in cls_name
 
 
+def _is_sdxl_pipeline(pipe: DiffusionPipeline) -> bool:
+    """Check if the loaded pipeline is a Stable Diffusion XL variant."""
+    cls_name = type(pipe).__name__
+    return "StableDiffusionXL" in cls_name
+
+
 def _load_sd3_pipeline(model_id: str, dtype: torch.dtype) -> DiffusionPipeline:
     """Load a Stable Diffusion 3.x pipeline."""
     from diffusers import StableDiffusion3Pipeline
@@ -82,20 +88,32 @@ def _load_sd_pipeline(model_id: str, dtype: torch.dtype) -> DiffusionPipeline:
     return pipe
 
 
+def _load_sdxl_pipeline(model_id: str, dtype: torch.dtype) -> DiffusionPipeline:
+    """Load a Stable Diffusion XL pipeline."""
+    from diffusers import StableDiffusionXLPipeline
+
+    return StableDiffusionXLPipeline.from_pretrained(model_id, torch_dtype=dtype)
+
+
 def load_pipeline(config: SeedMiningConfig, device: str = "cuda") -> DiffusionPipeline:
-    """Load and configure a diffusion pipeline (SD 1.x/2.x/3.x)."""
+    """Load and configure a diffusion pipeline (SD 1.x/2.x/XL/3.x)."""
     dtype = torch.float16
 
     # Detect pipeline type from model config on Hub
     model_id = config.model_id
-    if "stable-diffusion-3" in model_id.lower() or "sd3" in model_id.lower():
+    model_lower = model_id.lower()
+    if "stable-diffusion-3" in model_lower or "sd3" in model_lower:
         pipe = _load_sd3_pipeline(model_id, dtype)
+    elif "sdxl" in model_lower or "stable-diffusion-xl" in model_lower:
+        pipe = _load_sdxl_pipeline(model_id, dtype)
     else:
         pipe = _load_sd_pipeline(model_id, dtype)
 
     # Set scheduler (SD3 uses FlowMatchEulerDiscreteScheduler — don't override)
     if _is_sd3_pipeline(pipe):
         logger.info("SD3 pipeline detected — keeping native FlowMatch scheduler")
+    elif config.scheduler.lower() == "default":
+        logger.info("Keeping model's default scheduler: %s", type(pipe.scheduler).__name__)
     else:
         pipe.scheduler = _get_scheduler(config.scheduler, pipe.scheduler.config)
 

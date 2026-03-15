@@ -1,0 +1,114 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vlm-eval-sdxl-expanded
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: vlm-eval
+        task: vlm-evaluation
+        model: qwen2.5vl
+    spec:
+      restartPolicy: OnFailure
+
+      containers:
+      - name: evaluator
+        image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/bash"]
+        args:
+        - "-c"
+        - |
+          set -e
+
+          echo "=== Installing dependencies ==="
+          apt-get update && apt-get install -y git
+          git clone https://github.com/Kkuntal990/seed-selection-npnet.git /workspace/repo
+          cd /workspace/repo && pip install --root-user-action=ignore --no-cache-dir ./seed-mining ./vlm-eval
+          echo "=== Dependencies installed ==="
+
+          python -c "
+          import sys
+          sys.argv = [sys.argv[0]]
+
+          from vlm_eval.evaluator import load_vlm, run_evaluation
+          from vlm_eval.eval_config import EvalConfig
+
+          config = EvalConfig(
+              _cli_parse_args=False,
+              vlm_model_id='Qwen/Qwen2.5-VL-7B-Instruct',
+              quantize='4bit',
+              images_dir='/output/sdxl-expanded',
+              prompt_dataset_dir='/workspace/repo/seed-mining/prompt_dataset',
+              eval_out_dir='/output/sdxl-expanded/eval',
+              seed_start=0,
+              seed_range=150,
+              num_objects=30,
+              num_settings=8,
+              category='all',
+          )
+          run_evaluation(config)
+          "
+
+        resources:
+          requests:
+            nvidia.com/rtxa6000: "1"
+            memory: "32Gi"
+            cpu: "4"
+          limits:
+            nvidia.com/rtxa6000: "1"
+            memory: "48Gi"
+            cpu: "8"
+
+        volumeMounts:
+        - name: cache-volume
+          mountPath: /cache
+        - name: output
+          mountPath: /output
+        - name: dev-shm
+          mountPath: /dev/shm
+
+        env:
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token
+              key: token
+              optional: true
+        - name: HF_HOME
+          value: "/cache/hf"
+        - name: TRANSFORMERS_CACHE
+          value: "/cache/hf/transformers"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "expandable_segments:True"
+
+      tolerations:
+      - effect: NoSchedule
+        key: nautilus.io/hardware
+        operator: Equal
+        value: large-gpu
+      - effect: PreferNoSchedule
+        key: nvidia.com/gpu
+        operator: Exists
+      - key: nautilus.io/reservation
+        operator: Exists
+        effect: NoSchedule
+      - key: nautilus.io/issue
+        operator: Exists
+        effect: NoSchedule
+
+      volumes:
+      - name: cache-volume
+        emptyDir:
+          sizeLimit: 100Gi
+      - name: output
+        persistentVolumeClaim:
+          claimName: seed-mining-output
+      - name: dev-shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 16Gi
