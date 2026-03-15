@@ -16,24 +16,30 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: collector
-          image: ghcr.io/kkuntal990/seed-mining:latest
-          imagePullPolicy: Always
+          image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
+          imagePullPolicy: IfNotPresent
           command: ["/bin/bash"]
           args:
           - "-c"
           - |
+            set -e
+
+            echo "=== Installing dependencies ==="
+            apt-get update && apt-get install -y git
+            git clone https://github.com/Kkuntal990/seed-selection-npnet.git /workspace/repo
+            cd /workspace/repo && pip install --root-user-action=ignore --no-cache-dir ./seed-mining ./npnet
+            echo "=== Dependencies installed ==="
+
             echo "========================================="
             echo "NPNet — Data Collection (DDIM Inversion)"
             echo "Model: ${MODEL_ID}"
             echo "Seeds: ${SEED_START}..$(( SEED_START + SEED_RANGE - 1 ))"
             echo "========================================="
-            echo ""
 
             nvidia-smi
-            echo ""
 
             echo "Starting noise pair collection..."
-            cd /app/npnet && uv run python scripts/collect_noise_pairs.py \
+            cd /workspace/repo/npnet && python scripts/collect_noise_pairs.py \
               --model_id "${MODEL_ID}" \
               --prompt_dataset_dir "${PROMPT_DATASET_DIR}" \
               --split "${SPLIT}" \
@@ -84,7 +90,7 @@ spec:
           - name: MODEL_ID
             value: "stabilityai/stable-diffusion-xl-base-1.0"
           - name: PROMPT_DATASET_DIR
-            value: "/app/seed-mining/prompt_dataset"
+            value: "/workspace/repo/seed-mining/prompt_dataset"
           - name: SPLIT
             value: "train"
           - name: NUM_OBJECTS

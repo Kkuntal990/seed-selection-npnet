@@ -16,32 +16,30 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: generator
-          image: ghcr.io/kkuntal990/seed-mining:latest
-          imagePullPolicy: Always
+          image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
+          imagePullPolicy: IfNotPresent
           command: ["/bin/bash"]
           args:
           - "-c"
           - |
+            set -e
+
+            echo "=== Installing dependencies ==="
+            apt-get update && apt-get install -y git
+            git clone https://github.com/Kkuntal990/seed-selection-npnet.git /workspace/repo
+            cd /workspace/repo && pip install --root-user-action=ignore --no-cache-dir ./seed-mining
+            echo "=== Dependencies installed ==="
+
             echo "========================================="
             echo "Seed Mining — Image Generation (1 GPU)"
             echo "Model: ${MODEL_ID}"
             echo "Seeds: ${SEED_START}..$(( SEED_START + SEED_RANGE - 1 ))"
             echo "========================================="
-            echo ""
 
-            # GPU verification
-            echo "GPU Status:"
             nvidia-smi
-            echo ""
 
-            # Install missing deps for SD3
-            uv pip install sentencepiece protobuf
-            echo ""
-
-            # Start generation
             echo "Starting image generation..."
-            echo ""
-            cd /app/seed-mining && uv run python scripts/generate_seed_mining_images.py \
+            cd /workspace/repo/seed-mining && python scripts/generate_seed_mining_images.py \
               --model_id "${MODEL_ID}" \
               --out_dir "${OUTPUT_DIR}" \
               --seed_start "${SEED_START}" \

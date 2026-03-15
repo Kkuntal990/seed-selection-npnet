@@ -314,7 +314,39 @@ def _normalize_math_answer(ans):
 
 
 # ────────────────────────────────────────────────────────────────
-# GSM8K  (8-shot, 300 samples)
+# Batched generation helper
+# ────────────────────────────────────────────────────────────────
+
+EVAL_BATCH_SIZE = 8  # process 8 prompts at a time
+
+def _batched_generate(model, tokenizer, prompts, max_new_tokens, max_input_len=4096):
+    """Generate for a list of prompts in batches with left-padding."""
+    orig_side = tokenizer.padding_side
+    tokenizer.padding_side = "left"
+    all_outputs = []
+    for i in range(0, len(prompts), EVAL_BATCH_SIZE):
+        batch_prompts = prompts[i : i + EVAL_BATCH_SIZE]
+        inputs = tokenizer(
+            batch_prompts, return_tensors="pt", padding=True,
+            truncation=True, max_length=max_input_len,
+        ).to(model.device)
+        with torch.inference_mode():
+            out_ids = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+        for j in range(out_ids.shape[0]):
+            gen_ids = out_ids[j][inputs["input_ids"].shape[1]:]
+            gen_text = tokenizer.decode(gen_ids, skip_special_tokens=True)
+            all_outputs.append(gen_text)
+    tokenizer.padding_side = orig_side
+    return all_outputs
+
+
+# ────────────────────────────────────────────────────────────────
+# GSM8K  (8-shot, 300 samples, batched)
 # ────────────────────────────────────────────────────────────────
 
 _GSM_PROMPT = "Question: {question}\nAnswer: Let's think step by step.\n"
@@ -337,32 +369,23 @@ def evaluate_gsm8k(model_path, cfg, **_kw):
     for ex in exemplars:
         prefix_text += _GSM_PROMPT.format(question=ex["question"]) + ex["answer"] + "\n\n"
 
-    correct = total = 0
-    for row in ds:
-        full_prompt = prefix_text + _GSM_PROMPT.format(question=row["question"])
-        input_ids = tokenizer(
-            full_prompt, return_tensors="pt", truncation=True, max_length=4096,
-        ).input_ids.to(model.device)
-        with torch.inference_mode():
-            out_ids = model.generate(
-                input_ids=input_ids,
-                max_new_tokens=max_new,
-                do_sample=False,
-                pad_token_id=tokenizer.eos_token_id,
-            )
-        gen = tokenizer.decode(out_ids[0][input_ids.shape[-1]:], skip_special_tokens=True)
+    prompts = [prefix_text + _GSM_PROMPT.format(question=row["question"]) for row in ds]
+    gold_answers = [_extract_numeric_answer(row["answer"]) for row in ds]
+
+    outputs = _batched_generate(model, tokenizer, prompts, max_new, max_input_len=4096)
+
+    correct = 0
+    for gen, gold in zip(outputs, gold_answers):
         pred = _extract_numeric_answer(gen)
-        gold = _extract_numeric_answer(row["answer"])
         if pred is not None and gold is not None and abs(pred - gold) < 1e-3:
             correct += 1
-        total += 1
     del model; torch.cuda.empty_cache()
-    acc = correct / max(total, 1)
-    logger.info("GSM8K accuracy: %.3f (%d/%d)", acc, correct, total)
+    acc = correct / max(len(outputs), 1)
+    logger.info("GSM8K accuracy: %.3f (%d/%d)", acc, correct, len(outputs))
     return acc
 
 # ────────────────────────────────────────────────────────────────
-# MATH  (0-shot, 500 Level-5 problems, extract \boxed{} answer)
+# MATH  (0-shot, 500 Level-5 problems, extract \boxed{} answer, batched)
 # ────────────────────────────────────────────────────────────────
 
 _MATH_PROMPT = (
@@ -382,31 +405,24 @@ def evaluate_math(model_path, cfg, **_kw):
     ds = load_dataset("lighteval/MATH-Hard", split="test")
     ds = ds.shuffle(seed=42).select(range(min(num_samples, len(ds))))
 
-    correct = total = 0
-    for row in ds:
-        prompt = _MATH_PROMPT.format(problem=row["problem"])
-        input_ids = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048).input_ids.to(model.device)
-        with torch.inference_mode():
-            out_ids = model.generate(
-                input_ids=input_ids,
-                max_new_tokens=max_new,
-                do_sample=False,
-                pad_token_id=tokenizer.eos_token_id,
-            )
-        gen = tokenizer.decode(out_ids[0][input_ids.shape[-1]:], skip_special_tokens=True)
+    prompts = [_MATH_PROMPT.format(problem=row["problem"]) for row in ds]
+    gold_answers = [_normalize_math_answer(_extract_boxed_answer(row["solution"])) for row in ds]
+
+    outputs = _batched_generate(model, tokenizer, prompts, max_new, max_input_len=2048)
+
+    correct = 0
+    for gen, gold in zip(outputs, gold_answers):
         pred = _normalize_math_answer(_extract_boxed_answer(gen))
-        gold = _normalize_math_answer(_extract_boxed_answer(row["solution"]))
         if pred is not None and gold is not None and pred == gold:
             correct += 1
-        total += 1
     del model; torch.cuda.empty_cache()
-    acc = correct / max(total, 1)
-    logger.info("MATH accuracy: %.3f (%d/%d)", acc, correct, total)
+    acc = correct / max(len(outputs), 1)
+    logger.info("MATH accuracy: %.3f (%d/%d)", acc, correct, len(outputs))
     return acc
 
 
 # ────────────────────────────────────────────────────────────────
-# ARC-Challenge  (0-shot MC, 500 samples)
+# ARC-Challenge  (0-shot MC, 500 samples, batched)
 # ────────────────────────────────────────────────────────────────
 
 _ARC_CHOICES = ["A", "B", "C", "D", "E"]
@@ -431,31 +447,29 @@ def evaluate_arc_challenge(model_path, cfg, **_kw):
     ds = load_dataset("allenai/ai2_arc", "ARC-Challenge", split="test")
     ds = ds.shuffle(seed=42).select(range(min(num_samples, len(ds))))
 
-    correct = total = 0
+    prompts = []
+    gold_answers = []
     for row in ds:
-        prompt, labels = _format_arc_prompt(row)
-        input_ids = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048).input_ids.to(model.device)
-        with torch.inference_mode():
-            out_ids = model.generate(
-                input_ids=input_ids,
-                max_new_tokens=max_new,
-                do_sample=False,
-                pad_token_id=tokenizer.eos_token_id,
-            )
-        gen = tokenizer.decode(out_ids[0][input_ids.shape[-1]:], skip_special_tokens=True).strip()
+        prompt, _labels = _format_arc_prompt(row)
+        prompts.append(prompt)
+        gold_answers.append(row["answerKey"])
+
+    outputs = _batched_generate(model, tokenizer, prompts, max_new, max_input_len=2048)
+
+    correct = 0
+    for gen, gold in zip(outputs, gold_answers):
+        gen = gen.strip()
         pred_letter = gen.split()[0].strip().rstrip(".") if gen.split() else ""
-        gold = row["answerKey"]
         if pred_letter.upper() == gold.upper():
             correct += 1
-        total += 1
     del model; torch.cuda.empty_cache()
-    acc = correct / max(total, 1)
-    logger.info("ARC-Challenge accuracy: %.3f (%d/%d)", acc, correct, total)
+    acc = correct / max(len(outputs), 1)
+    logger.info("ARC-Challenge accuracy: %.3f (%d/%d)", acc, correct, len(outputs))
     return acc
 
 
 # ────────────────────────────────────────────────────────────────
-# GPQA  (0-shot MC, full diamond split ~198 Qs, shuffled choices)
+# GPQA  (0-shot MC, full diamond split ~198 Qs, shuffled choices, batched)
 # ────────────────────────────────────────────────────────────────
 
 def _format_gpqa_prompt(row, rng):
@@ -478,30 +492,30 @@ def evaluate_gpqa(model_path, cfg, **_kw):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     model = _load_eval_model(model_path); model.eval()
-    ds = load_dataset("Idavidrein/gpqa", "gpqa_diamond", split="train")
+    hf_token = os.environ.get("HF_TOKEN") or None
+    ds = load_dataset("Idavidrein/gpqa", "gpqa_diamond", split="train", token=hf_token)
 
     import random
     rng = random.Random(42)
 
-    correct = total = 0
+    prompts = []
+    gold_answers = []
     for row in ds:
         prompt, gold_letter = _format_gpqa_prompt(row, rng)
-        input_ids = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=4096).input_ids.to(model.device)
-        with torch.inference_mode():
-            out_ids = model.generate(
-                input_ids=input_ids,
-                max_new_tokens=max_new,
-                do_sample=False,
-                pad_token_id=tokenizer.eos_token_id,
-            )
-        gen = tokenizer.decode(out_ids[0][input_ids.shape[-1]:], skip_special_tokens=True).strip()
+        prompts.append(prompt)
+        gold_answers.append(gold_letter)
+
+    outputs = _batched_generate(model, tokenizer, prompts, max_new, max_input_len=4096)
+
+    correct = 0
+    for gen, gold in zip(outputs, gold_answers):
+        gen = gen.strip()
         pred_letter = gen.split()[0].strip().rstrip(".") if gen.split() else ""
-        if pred_letter.upper() == gold_letter.upper():
+        if pred_letter.upper() == gold.upper():
             correct += 1
-        total += 1
     del model; torch.cuda.empty_cache()
-    acc = correct / max(total, 1)
-    logger.info("GPQA-Diamond accuracy: %.3f (%d/%d)", acc, correct, total)
+    acc = correct / max(len(outputs), 1)
+    logger.info("GPQA-Diamond accuracy: %.3f (%d/%d)", acc, correct, len(outputs))
     return acc
 
 
@@ -624,7 +638,7 @@ def _compute_logit_diagnostics(fp16_logits, q_logits, method, variant):
     top5 = sum(len(set(a.tolist()) & set(b.tolist())) for a, b in zip(t5f, t5q)) / (t5f.size(0) * 5)
     return LogitDiagnostics(method=method, variant=variant, kl_div=kl, cosine_sim=cos, top1_agreement=top1_agree, top5_agreement=top5)
 
-def run_layer_diagnostics(fp16_path, quant_path, cfg, method, variant, *, probe_seqs=32, probe_len=256, device="cuda", **_kw):
+def run_layer_diagnostics(fp16_path, quant_path, cfg, method, variant, *, probe_seqs=4, probe_len=128, device="cuda", **_kw):
     tokenizer = AutoTokenizer.from_pretrained(fp16_path, trust_remote_code=True)
     cal = get_calibration_data(cfg, tokenizer)
     input_ids = torch.cat([s["input_ids"][:, :probe_len] for s in cal[:probe_seqs]], dim=0).to(device)
@@ -660,9 +674,11 @@ def run_layer_diagnostics(fp16_path, quant_path, cfg, method, variant, *, probe_
 
 def plot_accuracy_vs_bandwidth(eval_df, output_dir):
     output_dir = Path(output_dir); output_dir.mkdir(parents=True, exist_ok=True)
+    df = eval_df.dropna(subset=["score"])
+    if df.empty: logger.warning("No valid scores for accuracy-vs-bandwidth plot."); return
     fig, ax = plt.subplots(figsize=(8, 5))
-    for m in eval_df["method"].unique():
-        sub = eval_df[eval_df["method"] == m]
+    for m in df["method"].unique():
+        sub = df[df["method"] == m]
         ax.scatter(sub["bytes_per_param_actual"], sub["score"], label=m.upper(), s=80, edgecolors="k", linewidths=0.5)
         for _, r in sub.iterrows():
             ax.annotate(r["variant"], (r["bytes_per_param_actual"], r["score"]), fontsize=7, ha="left", va="bottom")
@@ -672,14 +688,16 @@ def plot_accuracy_vs_bandwidth(eval_df, output_dir):
 
 def plot_accuracy_vs_deployment(eval_df, output_dir):
     output_dir = Path(output_dir); output_dir.mkdir(parents=True, exist_ok=True)
+    df = eval_df.dropna(subset=["score"])
+    if df.empty: logger.warning("No valid scores for accuracy-vs-deployment plot."); return
     metrics = [("tok_s", "Tokens / sec"), ("ms_per_token", "ms / token"), ("peak_vram_gb", "Peak VRAM (GB)")]
-    available = [m for m in metrics if m[0] in eval_df.columns]
+    available = [m for m in metrics if m[0] in df.columns]
     if not available: return
     fig, axes = plt.subplots(1, len(available), figsize=(6 * len(available), 5))
     if len(available) == 1: axes = [axes]
     for ax, (col, label) in zip(axes, available):
-        for m in eval_df["method"].unique():
-            sub = eval_df[eval_df["method"] == m]
+        for m in df["method"].unique():
+            sub = df[df["method"] == m]
             ax.scatter(sub[col], sub["score"], label=m.upper(), s=80, edgecolors="k", linewidths=0.5)
         ax.set_xlabel(label); ax.set_ylabel("Composite score"); ax.legend(fontsize=8)
     fig.suptitle("Accuracy vs. Deployment Metrics", fontsize=13)
@@ -695,8 +713,11 @@ def plot_ablation_sensitivity(eval_df, output_dir, task_col="score"):
         mlp  = sub.loc[sub["variant"] == "mlp_only_quant", task_col]
         if full.empty: continue
         fv = full.values[0]
-        if not attn.empty: rows.append({"method": m.upper(), "family": "Attn projections", "delta": fv - attn.values[0]})
-        if not mlp.empty:  rows.append({"method": m.upper(), "family": "MLP projections",  "delta": fv - mlp.values[0]})
+        if fv is None: continue
+        if not attn.empty and attn.values[0] is not None:
+            rows.append({"method": m.upper(), "family": "Attn projections", "delta": fv - attn.values[0]})
+        if not mlp.empty and mlp.values[0] is not None:
+            rows.append({"method": m.upper(), "family": "MLP projections",  "delta": fv - mlp.values[0]})
     if not rows: logger.warning("Not enough ablation data for sensitivity plot."); return
     bar_df = pd.DataFrame(rows)
     fig, ax = plt.subplots(figsize=(8, 5))
@@ -754,6 +775,16 @@ def discover_artifacts(cfg, method):
     return found
 
 
+def _compute_score(row, weights):
+    """Compute weighted score from available (non-None, non-NaN) metrics."""
+    valid = {k: row[k] for k in weights
+             if row.get(k) is not None and not (isinstance(row.get(k), float) and math.isnan(row.get(k)))}
+    if not valid:
+        return None
+    total_w = sum(weights[k] for k in valid)
+    return sum(weights[k] * valid[k] for k in valid) / total_w
+
+
 def evaluate_artifact(art, cfg, *, skip_tasks=None):
     skip = skip_tasks or set()
     weights = cfg["accuracy_weights"]
@@ -795,11 +826,7 @@ def evaluate_artifact(art, cfg, *, skip_tasks=None):
             row["gpqa"] = evaluate_gpqa(art["path"], cfg)
         except Exception:
             logger.exception("GPQA failed"); row["gpqa"] = None
-    metric_vals = {k: row.get(k) for k in weights}
-    if all(v is not None for v in metric_vals.values()):
-        row["score"] = sum(weights[k] * metric_vals[k] for k in weights)
-    else:
-        row["score"] = None
+    row["score"] = _compute_score(row, weights)
     if "benchmark" not in skip:
         try:
             print(">> Deployment benchmark ...", flush=True)
@@ -813,17 +840,66 @@ def evaluate_artifact(art, cfg, *, skip_tasks=None):
     return row
 
 
-def evaluate_all(artifacts, cfg, *, skip_tasks=None):
+def load_cached_eval(cfg, method):
+    """Load previously saved eval results if they exist."""
+    rd = Path(cfg["paths"]["results_dir"])
+    cache_path = rd / f"{method}_eval.jsonl"
+    if not cache_path.exists():
+        return {}
+    cached = {}
+    with open(cache_path) as f:
+        for line in f:
+            row = json.loads(line)
+            cached[row["variant"]] = row
+    logger.info("Loaded %d cached eval results from %s", len(cached), cache_path)
+    return cached
+
+
+def _cache_is_complete(row, weights):
+    """Return True only if all weighted eval metrics are present and valid."""
+    for k in weights:
+        v = row.get(k)
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return False
+    return True
+
+
+def evaluate_all(artifacts, cfg, *, skip_tasks=None, method="rtn"):
+    cached = load_cached_eval(cfg, method)
+    weights = cfg["accuracy_weights"]
     results = []
     for i, art in enumerate(artifacts):
+        variant = art["variant"]
+        if variant in cached and _cache_is_complete(cached[variant], weights):
+            print(f"\n[{i+1}/{len(artifacts)}] Using cached results for {variant}", flush=True)
+            row = cached[variant]
+            row["score"] = _compute_score(row, weights)
+            results.append(row)
+            continue
+        elif variant in cached:
+            missing = [k for k in weights if cached[variant].get(k) is None
+                       or (isinstance(cached[variant].get(k), float) and math.isnan(cached[variant].get(k)))]
+            print(f"\n[{i+1}/{len(artifacts)}] Re-evaluating {variant} (missing/NaN: {missing})", flush=True)
         row = evaluate_artifact(art, cfg, skip_tasks=skip_tasks)
         results.append(row)
+        # Save incrementally after each eval so progress is not lost
+        _save_incremental(results, cfg, method)
         gc.collect()
         torch.cuda.empty_cache()
         print(f"[{i+1}/{len(artifacts)}] Memory after cleanup: "
               f"{torch.cuda.memory_allocated()/1e9:.1f}GB GPU, "
               f"{torch.cuda.memory_reserved()/1e9:.1f}GB reserved", flush=True)
     return pd.DataFrame(results)
+
+
+def _save_incremental(results, cfg, method):
+    """Save results after each variant so we can resume on failure."""
+    rd = Path(cfg["paths"]["results_dir"]); rd.mkdir(parents=True, exist_ok=True)
+    out = rd / f"{method}_eval.jsonl"
+    with open(out, "w") as f:
+        for row in results:
+            f.write(json.dumps(row) + "\n")
+    logger.info("Incremental save: %d rows to %s", len(results), out)
 
 
 def run_all_diagnostics(artifacts, cfg):
@@ -912,7 +988,7 @@ def main():
     for a in artifacts:
         print(f"  {a['variant']:20s}  {a['path']}")
 
-    eval_df = evaluate_all(artifacts, cfg)
+    eval_df = evaluate_all(artifacts, cfg, method=METHOD)
     save_eval_results(eval_df, cfg, METHOD)
     print("\nEvaluation results:")
     print(eval_df.to_string())

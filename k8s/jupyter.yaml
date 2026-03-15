@@ -9,23 +9,34 @@ spec:
   restartPolicy: Never
   containers:
   - name: jupyter-container-3
-    image: ghcr.io/kkuntal990/seed-mining:latest
-    imagePullPolicy: Always
-    command: ["/bin/bash", "-c"]
-    args:
+    image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
+    imagePullPolicy: IfNotPresent
+    command:
+      - bash
+      - -c
       - |
-        cd /app &&
-        jupyter lab --ip=0.0.0.0 --no-browser --allow-root --NotebookApp.token=selfimprove
+        apt-get update && apt-get install -y git &&
+        pip install --root-user-action=ignore --no-cache-dir \
+          jupyterlab \
+          "diffusers>=0.30" "transformers<=4.45" accelerate \
+          pydantic-settings Pillow rich tqdm \
+          sentencepiece protobuf &&
+        git clone https://github.com/Kkuntal990/seed-selection-npnet.git /workspace/ece271b-project &&
+        cd /workspace/ece271b-project &&
+        pip install --root-user-action=ignore --no-cache-dir ./seed-mining &&
+        jupyter lab --ip=0.0.0.0 --no-browser --allow-root \
+          --ServerApp.root_dir=/ \
+          --IdentityProvider.token=selfimprove
 
     resources:
       limits:
         nvidia.com/rtxa6000: "1"
         memory: "32Gi"
-        cpu: "4"
+        cpu: "2"
       requests:
         nvidia.com/rtxa6000: "1"
         memory: "32Gi"
-        cpu: "4"
+        cpu: "2"
 
     volumeMounts:
       - name: cache-volume
@@ -46,6 +57,10 @@ spec:
       value: "/cache/hf"
     - name: TRANSFORMERS_CACHE
       value: "/cache/hf/transformers"
+    - name: TORCH_HOME
+      value: "/cache/torch"
+    - name: PIP_CACHE_DIR
+      value: "/cache/pip"
     - name: PYTHONUNBUFFERED
       value: "1"
     - name: PYTORCH_CUDA_ALLOC_CONF
