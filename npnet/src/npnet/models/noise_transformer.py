@@ -32,8 +32,13 @@ class NoiseTransformer(nn.Module):
         out = self.downconv(x)
         out = F.interpolate(out, [224, 224])
         out = self.swin.forward_features(out)  # type: ignore[operator]
-        # Swin returns (B, 7, 7, 768) in NHWC format.
-        # F.interpolate treats as (B, C=7, H=7, W=768) → (B, 7, res, res)
+        # timm 0.6.x: (B, 49, 768) — reshape to (B, 7, 7, 768)
+        if out.ndim == 3:
+            b, hw, c = out.shape
+            h = w = int(hw**0.5)
+            out = out.reshape(b, h, w, c)
+        # Now (B, 7, 7, 768) in NHWC — F.interpolate treats as (B, C=7, H=7, W=768)
+        # resizes to (B, 7, res, res), giving 7 "channels" for upconv(7→4)
         out = F.interpolate(out, [self.resolution, self.resolution])
         result: "torch.Tensor" = self.upconv(out)
         return result
