@@ -30,29 +30,8 @@ def residual_loss(
     source: torch.Tensor,
     target: torch.Tensor,
 ) -> torch.Tensor:
-    """Compute loss on the transport delta, not full reconstruction.
-
-    Combines:
-    - Cosine similarity on flattened deltas (directional alignment, scale-invariant)
-    - L1 loss on deltas (sparse gradients, better than MSE for weak signals)
-    - MSE loss on full output (reconstruction fidelity)
-
-    This gives meaningful gradients even when source/target are both ~N(0,1)
-    and nearly equidistant in high dimensions.
-    """
-    delta_pred = predicted - source.float()
-    delta_true = target.float() - source.float()
-
-    # Directional loss: are we moving in the right direction?
-    cos_loss = 1.0 - F.cosine_similarity(delta_pred.flatten(1), delta_true.flatten(1)).mean()
-
-    # Magnitude loss: are we moving the right amount?
-    l1_loss = F.l1_loss(delta_pred, delta_true)
-
-    # Reconstruction loss: does the output match the target?
-    mse_loss = F.mse_loss(predicted, target.float())
-
-    return cos_loss + l1_loss + 0.1 * mse_loss
+    """Pure MSE between predicted and target golden noise."""
+    return F.mse_loss(predicted, target.float())
 
 
 class PrecomputedEmbedDataset(Dataset[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]):
