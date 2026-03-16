@@ -1,0 +1,9 @@
+ranking_dir: /data/vlm_ranking
+categories: [numeracy, spatial]
+mode: pairwise
+epochs: 50
+batch_size: 128
+lr: 0.001
+margin: 0.5
+scorer_hidden_dim: 64
+checkpoint_dir: checkpoints/scorer

@@ -76,3 +76,30 @@ def analyze_inversion_local() -> None:
 
     config = InversionLocalDiagnosticsConfig()  # type: ignore[call-arg]
     run_diagnostics(config)
+
+
+def train_scorer() -> None:
+    """Train SeedScorer on VLM ranking data (Phase A)."""
+    from npnet.config import ScorerConfig
+    from npnet.hybrid_trainer import run_scorer_training
+
+    config = ScorerConfig()  # type: ignore[call-arg]
+    run_scorer_training(config)
+
+
+def train_editor() -> None:
+    """Train hybrid editor with frozen NPNet + scorer (Phase B)."""
+    from npnet.config import HybridTrainingConfig
+    from npnet.hybrid_trainer import run_hybrid_training
+
+    config = HybridTrainingConfig()  # type: ignore[call-arg]
+    run_hybrid_training(config)
+
+
+def eval_hybrid() -> None:
+    """Evaluate hybrid inference (baseline/rerank/edit/rerank_edit)."""
+    from npnet.config import HybridInferenceConfig
+    from npnet.hybrid_inference import run_hybrid_evaluation
+
+    config = HybridInferenceConfig()  # type: ignore[call-arg]
+    run_hybrid_evaluation(config)

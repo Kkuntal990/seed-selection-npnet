@@ -1,0 +1,14 @@
+npnet_checkpoint: checkpoints/npnet_best.pth
+scorer_checkpoint: checkpoints/scorer/scorer_best.pth
+dataset_type: inversion_local
+dataset_dir: /data/inversion_local
+lambda_score: 1.0
+lambda_attn: 0.1
+lambda_edit: 1.0
+lambda_norm: 0.01
+attn_loss_type: denoising_consistency
+freeze_npnet: true
+freeze_scorer: true
+epochs: 30
+batch_size: 32
+lr: 0.0001

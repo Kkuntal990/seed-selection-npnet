@@ -38,6 +38,9 @@ npnet-generate = "npnet.cli:generate"
 npnet-build-local = "npnet.cli:build_inversion_local"
 npnet-benchmark = "npnet.cli:benchmark"
 npnet-analyze-local = "npnet.cli:analyze_inversion_local"
+npnet-train-scorer = "npnet.cli:train_scorer"
+npnet-train-editor = "npnet.cli:train_editor"
+npnet-eval-hybrid = "npnet.cli:eval_hybrid"
 
 [build-system]
 requires = ["hatchling"]

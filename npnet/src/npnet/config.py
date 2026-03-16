@@ -297,6 +297,237 @@ class InversionLocalDiagnosticsConfig(BaseSettings):
         )
 
 
+class ScorerConfig(BaseSettings):
+    """Configuration for SeedScorer training (Phase A)."""
+
+    model_config = {"env_prefix": "NPSC_", "cli_parse_args": True}
+
+    # --- Data ---
+    ranking_dir: Path = Field(description="VLM ranking output directory")
+    categories: list[str] = Field(default=["numeracy", "spatial"])
+    mode: str = Field(
+        default="pairwise",
+        description="Training mode: 'pairwise' (MarginRankingLoss) or 'pointwise' (BCE)",
+    )
+    max_pairs_per_prompt: int = 50
+
+    # --- Model ---
+    model_id: str = "stabilityai/stable-diffusion-xl-base-1.0"
+    text_embed_dim: int = 2048
+    text_seq_len: int = 77
+    scorer_hidden_dim: int = 64
+    height: int = 1024
+    width: int = 1024
+
+    # --- Training ---
+    epochs: int = 50
+    batch_size: int = 128
+    lr: float = 1e-3
+    margin: float = 0.5
+    seed: int = 42
+
+    # --- Checkpointing ---
+    checkpoint_dir: Path = Field(default=Path("checkpoints/scorer"))
+    save_every_n_epochs: int = 5
+    early_stopping_patience: int = 10
+
+    @field_validator("mode")
+    @classmethod
+    def validate_mode(cls, v: str) -> str:
+        if v not in ("pairwise", "pointwise"):
+            raise ValueError(f"mode must be 'pairwise' or 'pointwise', got '{v}'")
+        return v
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: Any,
+        env_settings: Any,
+        dotenv_settings: Any,
+        file_secret_settings: Any,
+    ) -> tuple[Any, ...]:
+        return (
+            init_settings,
+            CliSettingsSource(settings_cls, cli_parse_args=True),
+            env_settings,
+        )
+
+
+class HybridTrainingConfig(BaseSettings):
+    """Configuration for hybrid editor training (Phase B)."""
+
+    model_config = {"env_prefix": "NPHB_", "cli_parse_args": True}
+
+    # --- Model ---
+    model_id: str = "stabilityai/stable-diffusion-xl-base-1.0"
+
+    # --- Pretrained checkpoints ---
+    npnet_checkpoint: Path | None = Field(
+        default=None, description="Path to pretrained NPNet checkpoint"
+    )
+    scorer_checkpoint: Path | None = Field(
+        default=None, description="Path to pretrained SeedScorer checkpoint"
+    )
+
+    # --- Data (reuses TrainingConfig pattern) ---
+    dataset_type: str = Field(default="inversion_local")
+    dataset_dir: Path | None = Field(default=None, description="Dataset directory")
+    noise_pairs_dir: Path | None = None
+    prompt_manifest_path: Path | None = None
+    val_split: float = 0.1
+
+    # --- Architecture ---
+    latent_channels: int = 4
+    latent_resolution: int = 128
+    text_embed_dim: int = 2048
+    text_seq_len: int = 77
+    inference_mode: str = "replacement"
+
+    # --- Loss weights ---
+    lambda_edit: float = 1.0
+    lambda_score: float = 1.0
+    lambda_attn: float = 0.1
+    lambda_norm: float = 0.01
+    attn_loss_type: str = Field(
+        default="denoising_consistency",
+        description="Attention loss type: 'denoising_consistency' or 'none'",
+    )
+
+    # --- Freeze flags ---
+    freeze_npnet: bool = True
+    freeze_scorer: bool = True
+
+    # --- Training ---
+    epochs: int = 30
+    batch_size: int = 32
+    lr: float = 1e-4
+    grad_accumulation_steps: int = 1
+    num_workers: int = 4
+    seed: int = 42
+
+    # --- Checkpointing ---
+    checkpoint_dir: Path = Field(default=Path("checkpoints/hybrid"))
+    save_every_n_epochs: int = 5
+    early_stopping_patience: int = 10
+
+    @model_validator(mode="after")
+    def _check_dataset_fields(self) -> HybridTrainingConfig:
+        if self.dataset_type == "inversion_local" and self.dataset_dir is None:
+            raise ValueError("--dataset_dir is required when --dataset_type=inversion_local")
+        if (
+            self.dataset_type == "ddim"
+            and (self.noise_pairs_dir is None or self.prompt_manifest_path is None)
+        ):
+            raise ValueError(
+                "--noise_pairs_dir and --prompt_manifest_path required for dataset_type=ddim"
+            )
+        return self
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: Any,
+        env_settings: Any,
+        dotenv_settings: Any,
+        file_secret_settings: Any,
+    ) -> tuple[Any, ...]:
+        return (
+            init_settings,
+            CliSettingsSource(settings_cls, cli_parse_args=True),
+            env_settings,
+        )
+
+
+class HybridInferenceConfig(BaseSettings):
+    """Configuration for hybrid inference evaluation."""
+
+    model_config = {"env_prefix": "NPHBI_", "cli_parse_args": True}
+
+    # --- Model ---
+    model_id: str = "stabilityai/stable-diffusion-xl-base-1.0"
+
+    # --- Checkpoints ---
+    hybrid_checkpoint: Path | None = Field(
+        default=None, description="Path to trained HybridNPNet checkpoint"
+    )
+    scorer_checkpoint: Path | None = Field(
+        default=None, description="Path to trained SeedScorer checkpoint"
+    )
+
+    # --- Prompts ---
+    prompt_dataset_dir: Path = Field(
+        default=Path("prompt_dataset"), description="Directory with prompt data files"
+    )
+    split: str = "train"
+    num_objects: int | None = 15
+    num_settings: int | None = 4
+    append_background_to_spatial: bool = False
+
+    # --- Generation ---
+    seed_start: int = 0
+    seed_range: int = 100
+    num_inference_steps: int = 50
+    guidance_scale: float = 5.5
+    height: int = 1024
+    width: int = 1024
+    generator_device: str = "cpu"
+
+    # --- Hybrid mode ---
+    hybrid_mode: str = Field(
+        default="edit",
+        description="Inference mode: 'baseline', 'rerank', 'edit', 'rerank_edit'",
+    )
+    inference_mode: str = Field(
+        default="replacement",
+        description="NPNet mode: 'replacement' or 'delta'",
+    )
+    rerank_k: int = Field(default=16, description="Number of candidate seeds for reranking")
+
+    # --- Output ---
+    out_dir: Path = Field(default=Path("hybrid_output"), description="Output directory")
+    image_format: str = "jpg"
+
+    # --- Runtime ---
+    enable_cpu_offload: bool = False
+    dry_run: bool = False
+
+    @property
+    def seeds(self) -> list[int]:
+        return list(range(self.seed_start, self.seed_start + self.seed_range))
+
+    @field_validator("hybrid_mode")
+    @classmethod
+    def validate_hybrid_mode(cls, v: str) -> str:
+        valid = ("baseline", "rerank", "edit", "rerank_edit")
+        if v not in valid:
+            raise ValueError(f"hybrid_mode must be one of {valid}, got '{v}'")
+        return v
+
+    @field_validator("inference_mode")
+    @classmethod
+    def validate_inference_mode(cls, v: str) -> str:
+        if v not in ("delta", "replacement"):
+            raise ValueError(f"inference_mode must be 'delta' or 'replacement', got '{v}'")
+        return v
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: Any,
+        env_settings: Any,
+        dotenv_settings: Any,
+        file_secret_settings: Any,
+    ) -> tuple[Any, ...]:
+        return (
+            init_settings,
+            CliSettingsSource(settings_cls, cli_parse_args=True),
+            env_settings,
+        )
+
+
 class BenchmarkConfig(BaseSettings):
     """Configuration for SDXL NPNet benchmarking."""
 
