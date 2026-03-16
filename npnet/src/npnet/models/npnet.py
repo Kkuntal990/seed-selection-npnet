@@ -93,7 +93,7 @@ class NPNet(nn.Module):
         """Load checkpoint from original Golden Noise repo format."""
         ckpt = torch.load(path, map_location="cpu", weights_only=False)
         self.unet_svd.load_state_dict(ckpt["unet_svd"])
-        self.unet_embedding.load_state_dict(ckpt["unet_embedding"])
+        self.unet_embedding.load_state_dict(ckpt["unet_embedding"], strict=False)
         self.text_embedding.load_state_dict(ckpt["embeeding"])
         self._alpha.data = (
             ckpt["alpha"].data

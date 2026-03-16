@@ -26,7 +26,7 @@ class NoiseTransformer(nn.Module):
         self.resolution = resolution
         self.upconv = nn.Conv2d(7, channels, (1, 1), (1, 1), (0, 0))
         self.downconv = nn.Conv2d(channels, 3, (1, 1), (1, 1), (0, 0))
-        self.swin = create_model("swin_tiny_patch4_window7_224", pretrained=True)
+        self.swin = create_model("swin_tiny_patch4_window7_224", pretrained=False)
 
     def forward(self, x: "torch.Tensor") -> "torch.Tensor":
         out = self.downconv(x)
