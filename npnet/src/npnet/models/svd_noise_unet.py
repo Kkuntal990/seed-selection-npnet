@@ -10,8 +10,14 @@ import einops
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from timm.layers import use_fused_attn
 from typing_extensions import Final
+
+try:
+    from timm.layers import use_fused_attn
+except ImportError:
+    # timm < 1.0 compatibility
+    def use_fused_attn() -> bool:  # type: ignore[misc]
+        return hasattr(F, "scaled_dot_product_attention")
 
 
 class Attention(nn.Module):
