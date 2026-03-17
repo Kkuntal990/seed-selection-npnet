@@ -93,7 +93,8 @@ class HybridNPNet(nn.Module):
         golden = base + delta
 
         if return_components:
-            score = self.scorer(initial_noise, prompt_embeds)
+            # Score the editor OUTPUT so gradients flow back through the editor
+            score = self.scorer(golden, prompt_embeds)
             return {
                 "npnet_output": npnet_out,
                 "editor_delta": delta,

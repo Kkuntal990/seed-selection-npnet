@@ -514,19 +514,27 @@ def run_hybrid_training(config: HybridTrainingConfig) -> None:
 
                 # Loss components
                 loss = torch.tensor(0.0, device=device)
+                l_edit_val = 0.0
+                l_score_val = 0.0
+                l_norm_val = 0.0
 
                 if config.lambda_edit > 0:
                     l_edit = residual_loss(golden, source_noise, target)
                     loss = loss + config.lambda_edit * l_edit
+                    l_edit_val = l_edit.item()
 
                 if config.lambda_score > 0:
                     # Maximize score (minimize negative mean score)
+                    # NOTE: score is computed on golden (editor output),
+                    # so gradients flow back through the editor
                     l_score = -score.mean()
                     loss = loss + config.lambda_score * l_score
+                    l_score_val = l_score.item()
 
                 if config.lambda_norm > 0:
                     l_norm = (delta ** 2).mean()
                     loss = loss + config.lambda_norm * l_norm
+                    l_norm_val = l_norm.item()
 
                 if (
                     config.lambda_attn > 0
@@ -563,12 +571,16 @@ def run_hybrid_training(config: HybridTrainingConfig) -> None:
             if is_main and (step % log_every == 0 or step == 1):
                 avg_so_far = train_loss_sum / train_steps
                 logger.info(
-                    "Epoch %d/%d [step %d/%d] loss=%.6f lr=%.2e",
+                    "Epoch %d/%d [step %d/%d] loss=%.6f "
+                    "(edit=%.4f score=%.4f norm=%.6f) lr=%.2e",
                     epoch,
                     config.epochs,
                     step,
                     total_train_steps,
                     avg_so_far,
+                    l_edit_val,
+                    l_score_val,
+                    l_norm_val,
                     scheduler.get_last_lr()[0],
                 )
 
