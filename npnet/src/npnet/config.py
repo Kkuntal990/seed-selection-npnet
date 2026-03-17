@@ -422,6 +422,17 @@ class HybridTrainingConfig(BaseSettings):
             raise ValueError(
                 "--noise_pairs_dir and --prompt_manifest_path required for dataset_type=ddim"
             )
+        # Prevent silent training on frozen random weights
+        if self.freeze_npnet and self.npnet_checkpoint is None:
+            raise ValueError(
+                "--npnet_checkpoint is required when --freeze_npnet=true "
+                "(otherwise training freezes random NPNet weights)"
+            )
+        if self.freeze_scorer and self.scorer_checkpoint is None and self.lambda_score > 0:
+            raise ValueError(
+                "--scorer_checkpoint is required when --freeze_scorer=true and lambda_score > 0 "
+                "(otherwise training uses frozen random scorer weights)"
+            )
         return self
 
     @classmethod

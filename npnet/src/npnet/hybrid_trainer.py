@@ -374,23 +374,38 @@ def run_hybrid_training(config: HybridTrainingConfig) -> None:
     )
     pipe.to(device)
 
-    # Pre-compute embeddings
+    # Pre-compute embeddings (handle both inversion_local and ddim)
     from npnet.trainer import precompute_prompt_embeddings
 
-    embed_cache = precompute_prompt_embeddings(pipe, config.dataset_dir, device)  # type: ignore[arg-type]
+    if config.dataset_type == "inversion_local":
+        assert config.dataset_dir is not None
+        embed_cache = precompute_prompt_embeddings(pipe, config.dataset_dir, device)
+    else:
+        # For ddim, collect prompts from the raw dataset
+        unique_prompts_set: set[str] = set()
+        for i in range(len(train_ds)):  # type: ignore[arg-type]
+            _, _, prompt_text = train_ds[i]
+            unique_prompts_set.add(prompt_text)
+        for i in range(len(val_ds)):  # type: ignore[arg-type]
+            _, _, prompt_text = val_ds[i]
+            unique_prompts_set.add(prompt_text)
+        prompt_list = sorted(unique_prompts_set)
+        embed_cache = {}
+        with torch.no_grad():
+            for i in range(0, len(prompt_list), 64):
+                batch = prompt_list[i : i + 64]
+                embeds, _, _, _ = pipe.encode_prompt(prompt=batch, device=device)
+                for j, p in enumerate(batch):
+                    embed_cache[p] = embeds[j].cpu()
+        logger.info("Prompt embedding cache ready (%d entries)", len(embed_cache))
+
     train_ds = PrecomputedEmbedDataset(train_ds, embed_cache)
     val_ds = PrecomputedEmbedDataset(val_ds, embed_cache)
 
-    # Keep frozen UNet for attention loss if needed
-    frozen_unet = None
-    pooled_cache: dict[str, torch.Tensor] | None = None
+    # Pre-compute pooled embeddings (needed for attention loss)
+    pooled_cache: dict[str, torch.Tensor] = {}
     if config.lambda_attn > 0 and config.attn_loss_type == "denoising_consistency":
-        logger.info("Keeping frozen UNet for denoising consistency loss")
-        frozen_unet = pipe.unet
-        frozen_unet.requires_grad_(False)
-        frozen_unet.eval()
-        # Pre-compute pooled embeddings
-        pooled_cache = {}
+        logger.info("Pre-computing pooled embeddings for attention loss ...")
         unique_prompts = sorted(embed_cache.keys())
         with torch.no_grad():
             for i in range(0, len(unique_prompts), 64):
@@ -398,6 +413,17 @@ def run_hybrid_training(config: HybridTrainingConfig) -> None:
                 _, _, pooled, _ = pipe.encode_prompt(prompt=batch, device=device)
                 for j, p in enumerate(batch):
                     pooled_cache[p] = pooled[j].cpu()
+        logger.info("Pooled embedding cache ready (%d entries)", len(pooled_cache))
+
+    # Keep frozen UNet + scheduler for attention loss if needed
+    frozen_unet = None
+    noise_scheduler = None
+    if config.lambda_attn > 0 and config.attn_loss_type == "denoising_consistency":
+        logger.info("Keeping frozen UNet + scheduler for denoising consistency loss")
+        frozen_unet = pipe.unet
+        frozen_unet.requires_grad_(False)
+        frozen_unet.eval()
+        noise_scheduler = pipe.scheduler  # for proper forward noising (x0 -> xt)
         # Delete everything except UNet
         pipe.vae = None  # type: ignore[assignment]
         pipe.text_encoder = None  # type: ignore[assignment]
@@ -547,9 +573,16 @@ def run_hybrid_training(config: HybridTrainingConfig) -> None:
                     )
 
                     timestep = sample_random_timestep(golden.shape[0], device=device)
-                    # We need pooled embeddings for SDXL UNet
-                    # Use zeros as fallback if pooled cache not available
-                    pooled = torch.zeros(golden.shape[0], 1280, device=device)
+                    # Look up pooled embeddings by matching against cache
+                    # Use mean of all pooled as batch-level approximation
+                    if pooled_cache:
+                        pooled_list = list(pooled_cache.values())
+                        pooled_mean = torch.stack(pooled_list).mean(0)
+                        pooled = pooled_mean.unsqueeze(0).expand(
+                            golden.shape[0], -1
+                        ).to(device)
+                    else:
+                        pooled = torch.zeros(golden.shape[0], 1280, device=device)
                     l_attn = denoising_consistency_loss(
                         frozen_unet,
                         golden.float(),
@@ -557,6 +590,7 @@ def run_hybrid_training(config: HybridTrainingConfig) -> None:
                         prompt_embeds.float(),
                         pooled,
                         timestep,
+                        noise_scheduler=noise_scheduler,
                     )
                     loss = loss + config.lambda_attn * l_attn
 
@@ -586,30 +620,55 @@ def run_hybrid_training(config: HybridTrainingConfig) -> None:
 
         avg_train_loss = train_loss_sum / max(train_steps, 1)
 
-        # Validate
+        # Validate (full hybrid loss matching training for fair model selection)
         hybrid.eval()
         val_loss_sum = 0.0
+        val_edit_sum = 0.0
+        val_score_sum = 0.0
         val_count = 0
 
         with torch.no_grad():
             for source_noise, target, prompt_embeds in val_loader:
                 prompt_embeds = prompt_embeds.to(device)
-                golden = hybrid(source_noise, prompt_embeds)
-                loss = residual_loss(golden, source_noise, target)
-                val_loss_sum += loss.item() * len(source_noise)
+                components = hybrid(source_noise, prompt_embeds, return_components=True)
+                assert isinstance(components, dict)
+                golden_v = components["golden_noise"]
+                delta_v = components["editor_delta"]
+                score_v = components["score"]
+
+                v_edit = residual_loss(golden_v, source_noise, target)
+                v_score = -score_v.mean()
+                v_norm = (delta_v ** 2).mean()
+                v_total = (
+                    config.lambda_edit * v_edit
+                    + config.lambda_score * v_score
+                    + config.lambda_norm * v_norm
+                )
+
+                val_loss_sum += v_total.item() * len(source_noise)
+                val_edit_sum += v_edit.item() * len(source_noise)
+                val_score_sum += v_score.item() * len(source_noise)
                 val_count += len(source_noise)
 
-        val_tensor = torch.tensor([val_loss_sum, val_count], device=device)
+        val_tensor = torch.tensor(
+            [val_loss_sum, val_edit_sum, val_score_sum, val_count], device=device
+        )
         val_tensor = accelerator.reduce(val_tensor, reduction="sum")
-        avg_val_loss = val_tensor[0].item() / max(val_tensor[1].item(), 1)
+        cnt = max(val_tensor[3].item(), 1)
+        avg_val_loss = val_tensor[0].item() / cnt
+        avg_val_edit = val_tensor[1].item() / cnt
+        avg_val_score = val_tensor[2].item() / cnt
 
         if is_main:
             logger.info(
-                "Epoch %d/%d: train_loss=%.6f, val_loss=%.6f",
+                "Epoch %d/%d: train_loss=%.6f, val_loss=%.6f "
+                "(val_edit=%.4f val_score=%.4f)",
                 epoch,
                 config.epochs,
                 avg_train_loss,
                 avg_val_loss,
+                avg_val_edit,
+                avg_val_score,
             )
 
             unwrapped = accelerator.unwrap_model(hybrid)

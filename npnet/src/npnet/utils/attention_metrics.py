@@ -29,12 +29,14 @@ def denoising_consistency_loss(
     prompt_embeds: torch.Tensor,
     pooled_prompt_embeds: torch.Tensor,
     timestep: torch.Tensor,
+    noise_scheduler: Any | None = None,
     added_cond_kwargs: dict[str, torch.Tensor] | None = None,
 ) -> torch.Tensor:
     """Compute denoising consistency between predicted and target noise.
 
-    Gradients flow through ``predicted_noise`` (from the editor) but not
-    through the UNet parameters (frozen) or the target path.
+    Performs proper forward noising (x0 → xt) before calling the UNet, matching
+    the diffusion training objective. Gradients flow through ``predicted_noise``
+    (from the editor) but not through the UNet parameters (frozen) or the target path.
 
     Args:
         frozen_unet: Frozen SDXL UNet (no grad on parameters).
@@ -43,13 +45,14 @@ def denoising_consistency_loss(
         prompt_embeds: ``(B, 77, 2048)`` text embeddings.
         pooled_prompt_embeds: ``(B, 1280)`` pooled text embeddings.
         timestep: ``(B,)`` random diffusion timestep.
+        noise_scheduler: Diffusion noise scheduler with ``add_noise()`` method.
+            If None, passes noise directly to UNet (legacy behavior).
         added_cond_kwargs: Additional conditioning for SDXL UNet.
 
     Returns:
         Scalar MSE loss between UNet predictions on predicted vs target noise.
     """
     if added_cond_kwargs is None:
-        # SDXL requires time_ids; use default 1024x1024 crop
         batch_size = predicted_noise.shape[0]
         device = predicted_noise.device
         time_ids = torch.tensor(
@@ -61,18 +64,32 @@ def denoising_consistency_loss(
             "time_ids": time_ids,
         }
 
-    # Forward through frozen UNet with predicted noise (grads flow to input)
+    # Forward noising: treat predicted/target as x0, add noise to get xt
+    # This makes the UNet call consistent with diffusion training
+    if noise_scheduler is not None:
+        # Sample random noise epsilon for the forward process
+        epsilon = torch.randn_like(predicted_noise)
+        # x_t = sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * epsilon
+        predicted_noised = noise_scheduler.add_noise(predicted_noise, epsilon, timestep)
+        with torch.no_grad():
+            target_noised = noise_scheduler.add_noise(target_noise, epsilon, timestep)
+    else:
+        # Legacy: pass noise directly (less physically correct but still useful)
+        predicted_noised = predicted_noise
+        target_noised = target_noise
+
+    # Forward through frozen UNet with predicted noised latent (grads flow to input)
     eps_pred = frozen_unet(
-        predicted_noise,
+        predicted_noised,
         timestep,
         encoder_hidden_states=prompt_embeds,
         added_cond_kwargs=added_cond_kwargs,
     ).sample
 
-    # Forward through frozen UNet with target noise (no grads)
+    # Forward through frozen UNet with target noised latent (no grads)
     with torch.no_grad():
         eps_target = frozen_unet(
-            target_noise,
+            target_noised,
             timestep,
             encoder_hidden_states=prompt_embeds,
             added_cond_kwargs=added_cond_kwargs,

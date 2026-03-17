@@ -357,3 +357,25 @@ class TestHybridConfigs:
         )
         with pytest.raises(Exception):  # noqa: B017
             HybridTrainingConfig()
+
+    def test_hybrid_training_frozen_without_checkpoint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Freezing NPNet/scorer without checkpoint should raise."""
+        import sys
+
+        from npnet.config import HybridTrainingConfig
+
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "prog",
+                "--dataset_type", "inversion_local",
+                "--dataset_dir", "/tmp/data",
+                "--freeze_npnet", "true",
+                # no --npnet_checkpoint
+            ],
+        )
+        with pytest.raises(Exception):  # noqa: B017
+            HybridTrainingConfig()
